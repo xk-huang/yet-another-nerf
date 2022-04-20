@@ -1,0 +1,7 @@
+trainer:
+  type: MyTrainer
+  lr: 1.00e-3
+  epochs: 10
+model:
+  input_dims: 3
+  output_dims: 1
