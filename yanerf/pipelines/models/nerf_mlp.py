@@ -1,4 +1,4 @@
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional
 
 import torch
 
@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 class ModelOutputs(NamedTuple):
     raw_densities: torch.Tensor
     rays_colors: torch.Tensor
+    aux: Any
 
 
 @MODELS.register_module()
@@ -116,6 +117,7 @@ class NeRFMLP(torch.nn.Module):
         origins: torch.Tensor,
         directions: torch.Tensor,
         lengths: torch.Tensor,
+        xys: torch.Tensor,
         # fun_viewpool=None,
         # cameras=None,
         # camera: Optional[CamerasBase] = None,
@@ -163,7 +165,7 @@ class NeRFMLP(torch.nn.Module):
 
         rays_colors = self._get_colors(features, directions)
 
-        return ModelOutputs(raw_densities, rays_colors)
+        return ModelOutputs(raw_densities, rays_colors, {})
 
 
 class MLPWithInputSkips(torch.nn.Module):

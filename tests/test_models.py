@@ -12,16 +12,16 @@ def test_NeRFMLP():
     model = MODELS.build(cfg.model)
 
     data_shape_prefix = [3, 5, 5]
-    xyz_dims = 3
     num_pts_per_ray_dim = 6
-    data = (
-        torch.randn(*(data_shape_prefix + [xyz_dims])),
-        torch.randn(*(data_shape_prefix + [xyz_dims])),
-        torch.randn(*(data_shape_prefix + [num_pts_per_ray_dim])),
-        None,
+    data = dict(
+        origins=torch.randn(*(data_shape_prefix + [3])).abs(),
+        directions=torch.randn(*(data_shape_prefix + [3])).abs(),
+        lengths=torch.randn(*(data_shape_prefix + [num_pts_per_ray_dim])).abs().sort(dim=-1)[0],
+        xys=torch.randn(*(data_shape_prefix + [2])),
+        global_codes=None,
     )
 
     print(model)
-    outs: ModelOutputs = model(*data)
+    outs: ModelOutputs = model(**data)
     print(outs._fields)
-    print([i.shape for i in outs])
+    print([i.shape for i in outs if isinstance(i, torch.Tensor)])

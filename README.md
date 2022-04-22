@@ -9,6 +9,7 @@ Environment installation:
 ```shell
 conda env create -f envrionment.yml
 pre-commit install
+pip install -e .
 ```
 
 Pip packages:
@@ -39,6 +40,9 @@ nerf_synthetic.zip: <https://drive.google.com/file/d/18JxhpWD-4ZmuFKLzKlAw-w5Ppz
     1. networks/
         ray_bundle to points: (origins, directions, lengths)
     2. renderer/
+        ray_point_finer, sample_pdf
+        background_deltas / backgroud_opacity = 1e10, and use alpha mask to blend bg_color
+        use a dataclass to wrap the outputs fromprevious stage, and recursively call the render function
     3. raysampler/
 2. data/
 3. runner/

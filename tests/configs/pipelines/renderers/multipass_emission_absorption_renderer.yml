@@ -1,0 +1,6 @@
+renderer:
+  type: MultipassEmissionAbsorpsionRenderer
+  n_pts_per_ray_fine_training: 64
+  n_pts_per_ray_fine_evaluation: 64
+  append_coarse_samples_to_fine: true
+  density_noise_std_train: 1.0
