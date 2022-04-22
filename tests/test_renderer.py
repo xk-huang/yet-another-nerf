@@ -8,7 +8,12 @@ from yanerf.pipelines.renderers.utils import EvaluationMode, RendererOutput
 from yanerf.utils.config import Config
 
 
-def test_NeRFMLP():
+def test_on_cuda():
+    torch.set_default_tensor_type("torch.cuda.FloatTensor")
+    test_renderer()
+
+
+def test_renderer():
     renderer_cfg = Config.fromfile(
         osp.join(osp.dirname(__file__), "configs/pipelines/renderers/multipass_emission_absorption_renderer.yml")
     )

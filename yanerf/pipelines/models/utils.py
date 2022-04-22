@@ -5,11 +5,18 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, NamedTuple
 
 import torch
 import torch.nn.functional as F
 from torch.nn import Parameter, init
+
+
+class RayBundle(NamedTuple):
+    origins: torch.Tensor
+    directions: torch.Tensor
+    lengths: torch.Tensor
+    xys: torch.Tensor
 
 
 class HarmonicEmbedding(torch.nn.Module):

@@ -7,6 +7,11 @@ from yanerf.pipelines.models.nerf_mlp import ModelOutputs
 from yanerf.utils.config import Config
 
 
+def test_on_cuda():
+    torch.set_default_tensor_type("torch.cuda.FloatTensor")
+    test_NeRFMLP()
+
+
 def test_NeRFMLP():
     cfg = Config.fromfile(osp.join(osp.dirname(__file__), "configs/pipelines/models/nerf_mlp.yml"))
     model = MODELS.build(cfg.model)
