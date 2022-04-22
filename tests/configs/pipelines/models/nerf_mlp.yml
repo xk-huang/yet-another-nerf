@@ -1,0 +1,13 @@
+model:
+  type: NeRFMLP
+  n_layers:  8
+  input_skips: [5]
+  n_harmonic_functions_xyz:  10
+  harmonic_functions_xyz_append_intput: True
+  n_hidden_neurons_xyz:  256
+  n_harmonic_functions_dir:  4
+  harmonic_functions_dir_append_intput: True
+  n_hidden_neurons_dir:  128
+  latent_dim:  0
+  input_xyz: True
+  color_dim:  3
