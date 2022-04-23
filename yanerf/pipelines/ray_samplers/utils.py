@@ -1,11 +1,7 @@
 from enum import Enum
 from typing import NamedTuple
 import torch
-
-
-class EvaluationMode(Enum):
-    TRAINING = "training"
-    EVALUATION = "evaluation"
+from yanerf.pipelines.utils import RayBundle, EvaluationMode
 
 
 class RenderSamplingMode(Enum):
@@ -13,8 +9,16 @@ class RenderSamplingMode(Enum):
     FULL_GRID = "full_grid"
 
 
-class RayBundle(NamedTuple):
-    origins: torch.Tensor
-    directions: torch.Tensor
-    lengths: torch.Tensor
-    xys: torch.Tensor
+def get_xy_grid(image_height, image_width):
+    return torch.stack(
+        tuple(
+            reversed(
+                torch.meshgrid(
+                    torch.linspace(0, image_height - 1, image_height, dtype=torch.float32),
+                    torch.linspace(0, image_width - 1, image_width, dtype=torch.float32),
+                    indexing="ij",
+                )
+            )
+        ),
+        dim=-1,
+    )

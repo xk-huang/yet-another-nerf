@@ -117,11 +117,11 @@ class NeRFMLP(torch.nn.Module):
         origins: torch.Tensor,
         directions: torch.Tensor,
         lengths: torch.Tensor,
-        xys: torch.Tensor,
+        # xys: torch.Tensor,
         # fun_viewpool=None,
         # cameras=None,
         # camera: Optional[CamerasBase] = None,
-        global_codes: torch.Tensor = None,
+        global_codes: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> ModelOutputs:
         """

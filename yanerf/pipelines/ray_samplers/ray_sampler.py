@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 import torch
 
 from .builder import RAY_SAMPLERS
-from .utils import EvaluationMode, RayBundle, RenderSamplingMode
+from .utils import EvaluationMode, RayBundle, RenderSamplingMode, get_xy_grid
 
 
 @RAY_SAMPLERS.register_module()
@@ -70,6 +70,7 @@ class RaySampler(torch.nn.Module):
         mask: Optional[torch.Tensor] = None,
     ) -> RayBundle:
         sample_mask = None
+
         if (
             # pyre-fixme[29]
             self._sampling_mode[evaluation_mode] == RenderSamplingMode.MASK_SAMPLE
@@ -122,18 +123,7 @@ class _RaySampler(torch.nn.Module):
         self._unit_directions = unit_directions
         self._stratified_sampling = stratified_sampling
 
-        _xy_grid = torch.stack(
-            tuple(
-                reversed(
-                    torch.meshgrid(
-                        torch.linspace(0, image_height - 1, image_height, dtype=torch.float32),
-                        torch.linspace(0, image_width - 1, image_width, dtype=torch.float32),
-                        indexing="ij",
-                    )
-                )
-            ),
-            dim=-1,
-        )
+        _xy_grid = get_xy_grid(image_height=image_height, image_width=image_width)
 
         self.register_buffer("_xy_grid", _xy_grid, persistent=False)
 
@@ -147,7 +137,7 @@ class _RaySampler(torch.nn.Module):
         max_depth: Optional[float] = None,
         n_rays_per_image: Optional[int] = None,
         n_pts_per_ray: Optional[int] = None,
-        stratified_sampling: bool = False,
+        stratified_sampling: Optional[bool] = None,
     ) -> RayBundle:
         batch_size = poses.shape[0]
         device = poses.device
@@ -234,14 +224,20 @@ def _xy_to_ray_bundle(
         if stratified_sampling:
             rays_zs = _jiggle_within_stratas(rays_zs)
 
-    origins = poses[:, :, -1].view(batch_size, *([1] * len(spatial_size)), -1).expand(batch_size, *spatial_size, -1)
-    focal_lengths = focal_lengths.view(batch_size, 1, 1)
+    poses = poses.unsqueeze(1).unsqueeze(1)  # (B, 3, 4) -> (B, *spatial, 3, 4)
+    origins = poses[..., -1].expand(batch_size, *spatial_size, -1)  # (B, *spatial, 3)
+    focal_lengths = focal_lengths.view(batch_size, *([1] * len(spatial_size)))  # (B, *spatial)
     directions = torch.stack(
         (
             (xy_grid[..., 0] - image_width * 0.5) / focal_lengths,
             (xy_grid[..., 1] - image_height * 0.5) / focal_lengths,
             xy_grid.new_ones(batch_size, *spatial_size),
         ),
+        dim=-1,
+    )  # (B, *spatial, 3)
+
+    directions = torch.sum(
+        poses[..., :3, :3] * directions[..., None, :3],
         dim=-1,
     )
 

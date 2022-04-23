@@ -4,7 +4,8 @@ import torch
 
 from yanerf.pipelines.models import MODELS
 from yanerf.pipelines.renderers import RENDERERS
-from yanerf.pipelines.renderers.utils import EvaluationMode, RendererOutput
+from yanerf.pipelines.renderers.utils import RendererOutput
+from yanerf.pipelines.utils import EvaluationMode
 from yanerf.utils.config import Config
 
 
@@ -22,14 +23,24 @@ def test_renderer():
     model_cfg = Config.fromfile(osp.join(osp.dirname(__file__), "configs/pipelines/models/nerf_mlp.yml"))
     model = MODELS.build(model_cfg.model)
 
-    data_shape_prefix = [3, 5, 5]
+    B = 3
+    spatial = [4, 5]
+    data_shape_prefix = [B, *spatial]
     num_pts_per_ray_dim = 6
+    latent_dim = model_cfg.model.latent_dim
+
+    if latent_dim > 0:
+        global_codes = torch.randn(B, latent_dim)
+    else:
+        global_codes = None
+
     data = dict(
         origins=torch.randn(*(data_shape_prefix + [3])).abs(),
         directions=torch.randn(*(data_shape_prefix + [3])).abs(),
         lengths=torch.randn(*(data_shape_prefix + [num_pts_per_ray_dim])).abs().sort(dim=-1)[0],
         xys=torch.randn(*(data_shape_prefix + [2])),
-        global_codes=None,
+        global_codes=global_codes,
+        bg_color=torch.randn(*(data_shape_prefix + [3])).abs(),
     )
 
     print(model)

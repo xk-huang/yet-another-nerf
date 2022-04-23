@@ -2,8 +2,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 
+from yanerf.pipelines.utils import EvaluationMode, RayBundle
+
 from .builder import RENDERERS
-from .utils import EvaluationMode, RayBundle, RayPointRefiner, RendererOutput
+from .utils import RayPointRefiner, RendererOutput
 
 
 @RENDERERS.register_module()
@@ -52,10 +54,12 @@ class MultipassEmissionAbsorpsionRenderer(torch.nn.Module):
         directions: torch.Tensor,
         lengths: torch.Tensor,
         xys: torch.Tensor,
-        global_codes: torch.Tensor,
+        bg_color: Optional[torch.Tensor],
+        *,
+        # global_codes: torch.Tensor,
         implicit_functions: List[Callable],
-        bg_color: torch.Tensor = None,
         evaluation_mode: EvaluationMode = EvaluationMode.EVALUATION,
+        **kwargs,
     ):
         if not implicit_functions:
             raise ValueError("EA renderer expects implicit functions")
@@ -65,11 +69,12 @@ class MultipassEmissionAbsorpsionRenderer(torch.nn.Module):
             directions,
             lengths,
             xys,
-            global_codes,
+            # global_codes,
             bg_color,
             implicit_functions,
             None,
             evaluation_mode,
+            **kwargs,
         )
 
     def _run_raymarcher(
@@ -78,26 +83,30 @@ class MultipassEmissionAbsorpsionRenderer(torch.nn.Module):
         directions: torch.Tensor,
         lengths: torch.Tensor,
         xys: torch.Tensor,
-        global_codes: torch.Tensor,
+        # global_codes: torch.Tensor,
         bg_color: Optional[torch.Tensor],
         implicit_functions: List[Callable[..., Any]],
         prev_stage: Optional[RendererOutput],
         evaluation_mode: EvaluationMode,
+        **kwargs,
     ):
         density_noise_std = self.density_noise_std_train if evaluation_mode == EvaluationMode.TRAINING else 0.0
 
-        features, depth, mask, weights, aux = self._raymarcher(
-            *implicit_functions[0](origins, directions, lengths, xys, global_codes),
+        features, depths, alpha_masks, weights, aux = self._raymarcher(
+            *implicit_functions[0](origins, directions, lengths, **kwargs),
             ray_lengths=lengths,
+            ray_directions=directions,
             density_noise_std=density_noise_std,
             bg_color=bg_color,
         )
-        output = RendererOutput(features=features, depths=depth, masks=mask, aux=aux, prev_stage=prev_stage)
+        output = RendererOutput(
+            features=features, depths=depths, alpha_masks=alpha_masks, aux=aux, prev_stage=prev_stage
+        )
 
         if len(implicit_functions) > 1:  # type: ignore[arg-type]
             ray_bundle: RayBundle = self._refiners[evaluation_mode](origins, directions, lengths, xys, weights)
             output = self._run_raymarcher(
-                *ray_bundle, global_codes, bg_color, implicit_functions[1:], output, evaluation_mode
+                *ray_bundle, bg_color, implicit_functions[1:], output, evaluation_mode, **kwargs
             )
         return output
 
@@ -139,6 +148,7 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
         rays_features: torch.Tensor,
         aux: Dict[str, Any],
         ray_lengths: torch.Tensor,
+        ray_directions: torch.Tensor,
         density_noise_std: float = 0.0,
         bg_color: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
@@ -150,7 +160,7 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
                 of shape `(..., n_points_per_ray, feature_dim)`.
             aux: a dictionary with extra information.
             ray_lengths: Per-ray depth values represented with a tensor
-                of shape `(..., n_points_per_ray, feature_dim)`.
+                of shape `(..., n_points_per_ray,)`.
             density_noise_std: the magnitude of the noise added to densities.
 
         Returns:
@@ -179,6 +189,7 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
             ),
             dim=-1,
         )
+        deltas = deltas * ray_directions[..., None, :].norm(p=2, dim=-1)  # (B, *spatial, 1, 3)
 
         rays_densities = rays_densities[..., 0]
         if density_noise_std > 0.0:
@@ -190,20 +201,27 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
         capped_densities = self._capping_function(weighted_densities)
 
         rays_opacities = self._capping_function(torch.cumsum(weighted_densities, dim=-1))
-        opacities = rays_opacities[..., -1:]
+        opacities: torch.Tensor = rays_opacities[..., -1:]
         absorption_shifted = (1.0 - rays_opacities).roll(self.surface_thickness, dims=-1)
         absorption_shifted[..., : self.surface_thickness] = 1.0
 
         weights = self._weight_function(capped_densities, absorption_shifted)
         features: torch.Tensor = (weights[..., None] * rays_features).sum(dim=-2)
-        depth = (weights * ray_lengths)[..., None].sum(dim=-2)
+        depths = (weights * ray_lengths)[..., None].sum(dim=-2)
 
-        alpha = opacities if self.blend_output else 1
-        _bg_color: torch.Tensor = self._bg_color if bg_color is None else bg_color  # type: ignore[assignment]
+        alpha: Union[int, torch.Tensor] = opacities if self.blend_output else 1
+        _bg_color: torch.Tensor
+        if bg_color is None:
+            _bg_color = self._bg_color  # type: ignore[assignment]
+        else:
+            _bg_color = bg_color
         if _bg_color.shape[-1] not in [1, features.shape[-1]]:
-            raise ValueError("Wrong number of background color channels.")
-        features = alpha * features + (1 - opacities) * _bg_color
-        return features, depth, opacities, weights, aux
+            raise ValueError(
+                f"Wrong number of background color channels: _bg_color {_bg_color.shape} vs. features {features.shape}."
+            )
+
+        features = alpha * features + (1 - alpha) * _bg_color
+        return features, depths, opacities, weights, aux
 
 
 def _check_raymarcher_inputs(

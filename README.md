@@ -37,18 +37,26 @@ nerf_synthetic.zip: <https://drive.google.com/file/d/18JxhpWD-4ZmuFKLzKlAw-w5Ppz
 ### Stucture of Mine
 
 1. pipelines/
+    pipeline
+    the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function, and used in `renderer`)
+    [TODO]: `global_codes` is coupled with through the pipeline (include pipeline, renderer, and network), but this vaiable is only used in network)
     1. networks/
         ray_bundle to points: (origins, directions, lengths)
     2. renderer/
         ray_point_finer, sample_pdf
         background_deltas / backgroud_opacity = 1e10, and use alpha mask to blend bg_color
         use a dataclass to wrap the outputs fromprevious stage, and recursively call the render function
+        [FIXME]: the default `bg_color` is 0.0
+        `density_noise_std`, in original paper?
+        `blend_output=False`, the foreground mask is 1, but the also use the predicted background mask
     3. raysampler/
         Right-hand coordiantes: x-axis points to right, y-axis points to down, z-axis points to inward
         camera: cam2world
         tensor shape: `(batch_size, *spatial, -1)`, `spatial` is `[height, width]` or `[n_rays_per_image, 1]`
         `directions` are not normalized
 2. data/
+    the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function)
+    the range of images should be normalized to `[0, 1]` to compatible with the sigmoid activation.
 3. runner/
 
 ### Strcture of nerf.pl

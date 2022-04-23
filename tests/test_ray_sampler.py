@@ -39,15 +39,18 @@ def test_ray_sampler():
             "xys": [batch_size, image_height, image_width, 2],
         },
     }
+
     outs = ray_sampler(poses, focal_lengths, EvaluationMode.TRAINING)
     for k, v in outs._asdict().items():
         print(f"{k}: {v.shape}")
         assert list(v.shape) == gt_shapes[EvaluationMode.TRAINING][k]
+
     outs = ray_sampler(poses, focal_lengths, EvaluationMode.EVALUATION)
     for k, v in outs._asdict().items():
         print(f"{k}: {v.shape}")
         assert list(v.shape) == gt_shapes[EvaluationMode.EVALUATION][k]
 
+    # About sample gt image grid
     xys = outs[-1]
     xys_normalized = (xys / torch.Tensor([image_width - 1.0, image_height - 1.0])[None, None, None]) * 2 - 1
     sampled_img = torch.nn.functional.grid_sample(img, xys_normalized, align_corners=True)

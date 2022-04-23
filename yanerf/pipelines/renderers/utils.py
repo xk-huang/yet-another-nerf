@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, NamedTuple, Optional
+from typing import Any, Dict, Optional
 
 import torch
 
-
-class EvaluationMode(str, Enum):
-    TRAINING: str = "training"
-    EVALUATION: str = "evaluation"
+from yanerf.pipelines.utils import RayBundle
 
 
 @dataclass
@@ -30,18 +26,11 @@ class RendererOutput:
 
     features: torch.Tensor
     depths: torch.Tensor
-    masks: torch.Tensor
+    alpha_masks: torch.Tensor
     prev_stage: Optional[RendererOutput] = None
     normals: Optional[torch.Tensor] = None
     points: Optional[torch.Tensor] = None  # TODO: redundant with depths
     aux: Dict[str, Any] = field(default_factory=lambda: {})
-
-
-class RayBundle(NamedTuple):
-    origins: torch.Tensor
-    directions: torch.Tensor
-    lengths: torch.Tensor
-    xys: torch.Tensor
 
 
 class RayPointRefiner(torch.nn.Module):
