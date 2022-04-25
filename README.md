@@ -54,10 +54,11 @@ nerf_synthetic.zip: <https://drive.google.com/file/d/18JxhpWD-4ZmuFKLzKlAw-w5Ppz
         camera: cam2world
         tensor shape: `(batch_size, *spatial, -1)`, `spatial` is `[height, width]` or `[n_rays_per_image, 1]`
         `directions` are not normalized
-2. data/
+2. dataset/
     the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function)
     the range of images should be normalized to `[0, 1]` to compatible with the sigmoid activation.
 3. runner/
+    Multiprocess loading is on CPU.
 
 ### Strcture of nerf.pl
 

@@ -1,0 +1,4 @@
+dataset:
+  type: BlenderDataset
+  base_dir: "data/nerf_synthetic/drums"
+  split: "test"
