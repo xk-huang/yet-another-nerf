@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Optional, Tuple
 
 import torch
@@ -67,7 +68,12 @@ class RaySampler(torch.nn.Module):
         poses: torch.Tensor,
         focal_lengths: torch.Tensor,
         evaluation_mode: EvaluationMode,
+        *,
         mask: Optional[torch.Tensor] = None,
+        image_height: Optional[int] = None,
+        image_width: Optional[int] = None,
+        min_depth: Optional[float] = None,
+        max_depth: Optional[float] = None,
     ) -> RayBundle:
         sample_mask = None
 
@@ -76,15 +82,18 @@ class RaySampler(torch.nn.Module):
             self._sampling_mode[evaluation_mode] == RenderSamplingMode.MASK_SAMPLE
             and mask is not None
         ):
+            if image_height is None or image_width is None:
+                _image_height = self.image_height
+                _image_width = self.image_width
             sample_mask = torch.nn.functional.interpolate(
                 mask,
                 # pyre-fixme[6]: Expected `Optional[int]` for 2nd param but got
                 #  `List[int]`.
-                size=[self.image_height, self.image_width],
+                size=[_image_height, _image_width],
                 mode="nearest",
             )[:, 0]
 
-        if self.scene_extent > 0.0:
+        if min_depth is None and max_depth is None and self.scene_extent > 0.0:
             # Override the min/max depth set in initialization based on the
             # input cameras.
             min_depth, max_depth = get_min_max_depth_bounds(poses, self.scene_center, self.scene_extent)
@@ -93,8 +102,10 @@ class RaySampler(torch.nn.Module):
             poses,
             focal_lengths,
             mask=sample_mask,
-            min_depth=float(min_depth[0]) if self.scene_extent > 0.0 else None,
-            max_depth=float(max_depth[0]) if self.scene_extent > 0.0 else None,
+            min_depth=min_depth,
+            max_depth=max_depth,
+            image_height=image_height,
+            image_width=image_width,
         )
 
         return ray_bundle
@@ -127,11 +138,17 @@ class _RaySampler(torch.nn.Module):
 
         self.register_buffer("_xy_grid", _xy_grid, persistent=False)
 
+    @lru_cache()
+    def _get_xy_grid(self, image_height: int, image_width: int) -> torch.Tensor:
+        return get_xy_grid(image_height=image_height, image_width=image_width).to(device=self._xy_grid.device)
+
     def forward(
         self,
         poses,
         focal_lengths,
         *,
+        image_height: Optional[int] = None,
+        image_width: Optional[int] = None,
         mask: Optional[torch.Tensor] = None,
         min_depth: Optional[float] = None,
         max_depth: Optional[float] = None,
@@ -143,7 +160,13 @@ class _RaySampler(torch.nn.Module):
         device = poses.device
 
         poses = poses[:, :3, :4]
-        xy_grid = self._xy_grid.to(device).expand(batch_size, -1, -1, -1)  # type: ignore[operator]
+
+        if image_height is None or image_width is None:
+            xy_grid = self._xy_grid.to(device).expand(batch_size, -1, -1, -1)  # type: ignore[operator]
+            image_height = self._image_height
+            image_width = self._image_width
+        else:
+            xy_grid = self._get_xy_grid(image_height, image_width).to(device).expand(batch_size, -1, -1, -1)
 
         num_rays = n_rays_per_image or self._n_rays_per_image
         if mask is not None and num_rays is None:

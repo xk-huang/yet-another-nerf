@@ -37,6 +37,8 @@ def test_on_cuda():
 def test_pipeline():
     pipeline_cfg = Config.fromfile(osp.join("tests/configs/pipelines/nerf_pipeline_cfg_with_zero_outputer.py"))
     print(pipeline_cfg.filename)
+    pipeline_cfg.pipeline.renderer.blend_output = True
+    pipeline_cfg.pipeline.renderer.density_noise_std_train = 0.0
     print(pipeline_cfg.pretty_text)
 
     pipeline = PIPELINES.build(pipeline_cfg.pipeline)
@@ -84,6 +86,34 @@ def test_pipeline():
 
     if check_numerical:
         for preds in (train_preds, eval_preds):
-            assert torch.all(preds["rendered_images"] == bg_image_rgb)
+            assert torch.allclose(
+                preds["rendered_images"],
+                (preds["sampled_grids"] if preds.get("sampled_grids", None) is not None else 1.0) * bg_image_rgb,
+            )
     else:
         warnings.warn(f"{__file__}: not check the nemerical consistency of bg color injection")
+
+    _H, _W = 2, 4
+    _bg_image_rgb = torch.randn(B, _H, _W, 3)
+    train_preds = pipeline(
+        poses=poses,
+        focal_lengths=focal_lengths,
+        bg_image_rgb=_bg_image_rgb,
+        image_rgb=_bg_image_rgb,
+        evaluation_mode=EvaluationMode.EVALUATION,
+        image_width=_W,
+        image_height=_H,
+    )
+    eval_preds = pipeline(
+        poses=poses,
+        focal_lengths=focal_lengths,
+        bg_image_rgb=_bg_image_rgb,
+        image_rgb=_bg_image_rgb,
+        evaluation_mode=EvaluationMode.EVALUATION,
+        image_width=_W,
+        image_height=_H,
+    )
+    if check_numerical:
+        for preds in (train_preds, eval_preds):
+            assert torch.allclose(preds["objective"], torch.zeros(1))
+            assert torch.all(preds["rendered_images"] == _bg_image_rgb)

@@ -79,6 +79,10 @@ class NeRFPipeline(torch.nn.Module):
         *,
         poses: torch.Tensor,
         focal_lengths: torch.Tensor,
+        image_height: Optional[int] = None,
+        image_width: Optional[int] = None,
+        min_depth: Optional[float] = None,
+        max_depth: Optional[float] = None,
         global_codes: Optional[torch.Tensor] = None,
         # fg_probability: Optional[torch.Tensor],
         mask_crop: Optional[torch.Tensor] = None,
@@ -126,6 +130,10 @@ class NeRFPipeline(torch.nn.Module):
             evaluation_mode=evaluation_mode,
             # mask=mask_crop if mas k_crop is not None and sampling_mode == RenderSamplingMode.MASK_SAMPLE else None,
             mask=mask_crop if mask_crop is not None and sampling_mode == RenderSamplingMode.MASK_SAMPLE else None,
+            image_height=image_height,
+            image_width=image_width,
+            min_depth=min_depth,
+            max_depth=max_depth,
         )
 
         xys = ray_bundle._asdict()["xys"]
@@ -164,6 +172,8 @@ class NeRFPipeline(torch.nn.Module):
                 ) = self._rasterize_mc_samples(
                     xys,
                     bg_image_rgb if bg_image_rgb is not None else self.bg_color,  # type: ignore[arg-type]
+                    image_height,
+                    image_width,
                     rendered.features,
                     rendered.depths,
                     rendered.alpha_masks,
@@ -263,10 +273,16 @@ class NeRFPipeline(torch.nn.Module):
         self,
         xys: torch.Tensor,
         bg_color: Optional[torch.Tensor],
+        image_height: Optional[int],
+        image_width: Optional[int],
         *args: torch.Tensor,
     ) -> Tuple[torch.Tensor, ...]:
+        if image_height is None or image_width is None:
+            image_height = self.render_image_height
+            image_width = self.render_image_width
+
         def _scatter_rays_to_image(features):
-            return scatter_rays_to_image(features, xys, self.render_image_height, self.render_image_width, bg_color)
+            return scatter_rays_to_image(features, xys, image_height, image_width, bg_color)
 
         return tuple(_scatter_rays_to_image(_tensor) for _tensor in args)
 
