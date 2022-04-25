@@ -2,11 +2,11 @@ ray_sampler:
     type: RaySampler
     image_width: 10
     image_height: 6
-    n_rays_per_image_sampled_from_mask: 10
-    min_depth: 0.0
-    max_depth: 5.0
+    n_rays_per_image_sampled_from_mask: 4
+    min_depth: 0.5
+    max_depth: 1.0
     scene_extent: 0.0
-    n_pts_per_ray_training: 64
-    n_pts_per_ray_evaluation: 64
+    n_pts_per_ray_training: 5
+    n_pts_per_ray_evaluation: 5
     stratified_point_sampling_training: true
     stratified_point_sampling_evaluation: false

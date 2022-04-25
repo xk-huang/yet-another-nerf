@@ -136,7 +136,10 @@ def _rgb_metrics(
     images: torch.Tensor,
     images_pred: torch.Tensor,
 ):
-    rgb_squared = ((images_pred - images) ** 2).mean()
+    batch_size = images.shape[0]
+    images = images.view(batch_size, -1)
+    images_pred = images_pred.view(batch_size, -1)
+    rgb_squared = ((images_pred - images) ** 2).mean(dim=-1)
     rgb_loss = huber(rgb_squared, scaling=0.03)
     preds = {
         "rgb_huber": rgb_loss,
@@ -170,9 +173,9 @@ def calc_mse(
     Calculates the mean square error between tensors `x` and `y`.
     """
     if mask is None:
-        return torch.mean((x - y) ** 2)
+        return torch.mean((x - y) ** 2, dim=-1)
     else:
-        return (((x - y) ** 2) * mask).sum() / mask.expand_as(x).sum().clamp(1e-5)
+        return (((x - y) ** 2) * mask).sum(dim=-1) / mask.expand_as(x).sum(dim=-1).clamp(1e-5)
 
 
 def huber(dfsq: torch.Tensor, scaling: float = 0.03) -> torch.Tensor:

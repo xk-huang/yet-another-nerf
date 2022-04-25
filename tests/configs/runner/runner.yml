@@ -1,0 +1,18 @@
+runner:
+  output_dir: tmp/
+  print_per_iter: 10
+  init_lr: 1.0e-3
+  # lr warmup
+  warmup_steps: 3
+  warmup_lr: 1.0e-5
+  # lr decay
+  lr_decay_type: cosine # cosine, exponential
+  min_lr: 5.0e-5
+   # 0.99..99: num_decimal_epoch * num_decimal_rate = 1, rate ** num_epoch ~= 0.36
+   # 0.99..95: num_decimal_epoch * num_decimal_rate = 0.1, rate ** num_epoch ~= 0.60
+  lr_decay_rate: 0.9
+  lr_decay_epoch_interval: 10
+  num_epochs: 50
+  batch_size_train: 2
+  batch_size_eval: 2
+  debug: True

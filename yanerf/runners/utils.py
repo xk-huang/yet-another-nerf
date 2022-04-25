@@ -1,9 +1,57 @@
+import math
 import os
-from typing import Callable
+from functools import partial
+from typing import Callable, Optional
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
+
+
+def warmup_lr_scheduler(optimizer, step, max_step, init_lr, max_lr):
+    """Warmup the learning rate"""
+    lr = min(max_lr, init_lr + (max_lr - init_lr) * step / max_step)
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+
+def cosine_lr_scheduler(optimizer, epoch, lr_decay_epoch_interval, init_lr, min_lr, max_epoch):
+    """Decay the learning rate"""
+    lr = (init_lr - min_lr) * 0.5 * (1.0 + math.cos(math.pi * (epoch / lr_decay_epoch_interval) / max_epoch)) + min_lr
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+
+def step_lr_scheduler(optimizer, epoch, lr_decay_epoch_interval, init_lr, min_lr, lr_decay_rate):
+    """Decay the learning rate"""
+    lr = max(min_lr, init_lr * (lr_decay_rate ** (epoch / lr_decay_epoch_interval)))
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+
+def create_lr_scheduler(optimizer, config):
+    if config.lr_decay_type == "exponential":
+        sched = partial(
+            step_lr_scheduler,
+            optimizer=optimizer,
+            lr_decay_epoch_interval=config["lr_decay_epoch_interval"],
+            init_lr=config["init_lr"],
+            min_lr=config["min_lr"],
+            lr_decay_rate=config["lr_decay_rate"],
+        )
+    elif config.lr_decay_type == "cosine":
+        sched = partial(
+            cosine_lr_scheduler,
+            optimizer=optimizer,
+            lr_decay_epoch_interval=config["lr_decay_epoch_interval"],
+            init_lr=config["init_lr"],
+            min_lr=config["min_lr"],
+            max_epoch=config["num_epochs"],
+        )
+    else:
+        raise ValueError
+
+    return sched
 
 
 def create_sampler(dataset: Dataset, shuffle: bool, world_size: int, rank: int):
@@ -14,7 +62,13 @@ def create_sampler(dataset: Dataset, shuffle: bool, world_size: int, rank: int):
 
 
 def create_loader(
-    dataset: Dataset, sampler: Sampler, batch_size: int, num_workers: int, is_train: bool, collate_fn: Callable
+    dataset: Dataset,
+    sampler: Sampler,
+    batch_size: int,
+    num_workers: int,
+    is_train: bool,
+    collate_fn: Optional[Callable] = None,
+    pin_memory: bool = True,
 ):
 
     if is_train:
@@ -28,7 +82,7 @@ def create_loader(
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
         sampler=sampler,
         shuffle=shuffle,
         collate_fn=collate_fn,
@@ -104,3 +158,30 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+
+
+@torch.no_grad()
+def concat_all_gather(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    tensors_gather = [torch.ones_like(tensor) for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+    output = torch.cat(tensors_gather, dim=0)
+    return output
+
+
+def create_stats(preds, prefixes=["loss_", "objective"]):
+    return {k: v.mean().item() for k, v in preds.items() if any([k.startswith(prefix) for prefix in prefixes])}
+
+
+def pause_to_debug():
+    if is_main_process():
+        from IPython.core.debugger import set_trace
+
+        set_trace()
+
+    if is_dist_avail_and_initialized():
+        dist.barrier()
