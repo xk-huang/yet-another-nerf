@@ -75,7 +75,9 @@ class RayPointRefiner(torch.nn.Module):
         # Resort by depth.
         z_vals, _ = torch.sort(z_vals, dim=-1)
 
-        return RayBundle(origins=origins, directions=directions, lengths=lengths, xys=xys)
+        return RayBundle(
+            origins=origins, directions=directions, lengths=z_vals, xys=xys
+        )  # FIXME bug, shold return the z_vals
 
 
 def sample_pdf(
