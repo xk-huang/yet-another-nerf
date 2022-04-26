@@ -31,6 +31,7 @@ class NeRFMLP(torch.nn.Module):
         n_hidden_neurons_dir: int = 128,
         latent_dim: int = 0,
         input_xyz: bool = True,
+        input_dir: bool = True,
         # xyz_ray_dir_in_camera_coords: bool = False,
         color_dim: int = 3,
     ) -> None:
@@ -45,6 +46,7 @@ class NeRFMLP(torch.nn.Module):
         self.n_hidden_neurons_dir: int = n_hidden_neurons_dir
         self.latent_dim: int = latent_dim
         self.input_xyz: bool = input_xyz
+        self.input_dir: bool = input_dir
         self.color_dim: int = color_dim
 
         self.harmonic_embedding_xyz = HarmonicEmbedding(
@@ -69,16 +71,10 @@ class NeRFMLP(torch.nn.Module):
         # Zero the bias of the density layer to avoid
         # a completely transparent initialization.
         self.density_layer.bias.data[:] = 0.0  # fixme: Sometimes this is not enough
-
         self.color_layer = torch.nn.Sequential(
-            LinearWithRepeat(self.n_hidden_neurons_xyz + embedding_dim_dir, self.n_hidden_neurons_dir),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(self.n_hidden_neurons_dir, self.color_dim),
-            torch.nn.Sigmoid(),
-        )
-
-        self.color_layer = torch.nn.Sequential(
-            LinearWithRepeat(self.n_hidden_neurons_xyz + embedding_dim_dir, self.n_hidden_neurons_dir),
+            LinearWithRepeat(self.n_hidden_neurons_xyz + embedding_dim_dir, self.n_hidden_neurons_dir)
+            if input_dir
+            else torch.nn.Linear(self.n_hidden_neurons_xyz, self.n_hidden_neurons_dir),
             torch.nn.ReLU(True),
             torch.nn.Linear(self.n_hidden_neurons_dir, self.color_dim),
             torch.nn.Sigmoid(),
@@ -102,14 +98,19 @@ class NeRFMLP(torch.nn.Module):
         and evaluates the color model in order to attach to each
         point a 3D vector of its RGB color.
         """
-        # Normalize the ray_directions to unit l2 norm.
-        rays_directions_normed = torch.nn.functional.normalize(rays_directions, dim=-1)
-        # Obtain the harmonic embedding of the normalized ray directions.
-        # pyre-fixme[29]: `Union[torch.Tensor, torch.nn.Module]` is not a function.
-        rays_embedding = self.harmonic_embedding_dir(rays_directions_normed)
+        if self.input_dir:
+            # Normalize the ray_directions to unit l2 norm.
+            rays_directions_normed = torch.nn.functional.normalize(rays_directions, dim=-1)
+            # Obtain the harmonic embedding of the normalized ray directions.
+            # pyre-fixme[29]: `Union[torch.Tensor, torch.nn.Module]` is not a function.
+            rays_embedding = self.harmonic_embedding_dir(rays_directions_normed)
 
-        # pyre-fixme[29]: `Union[torch.Tensor, torch.nn.Module]` is not a function.
-        return self.color_layer((self.intermediate_linear(features), rays_embedding))
+            # pyre-fixme[29]: `Union[torch.Tensor, torch.nn.Module]` is not a function.
+            color = self.color_layer((self.intermediate_linear(features), rays_embedding))
+        else:
+            color = self.color_layer(self.intermediate_linear(features))
+
+        return color
 
     def forward(
         self,
@@ -151,8 +152,12 @@ class NeRFMLP(torch.nn.Module):
             rays_colors: A tensor of shape `(minibatch, ..., num_points_per_ray, 3)`
                 denoting the color of each ray point.
         """
-        rays_points_world = ray_bundle_to_ray_points(origins, directions, lengths)
         # rays_points_world.shape = [minibatch x ... x pts_per_ray x 3]
+        rays_points_world = ray_bundle_to_ray_points(origins, directions, lengths)
+
+        # [TODO] Check the input range
+        if not self._check_input(global_codes):
+            raise ValueError("The shape of global codes is imcompible with the input dim of the network.")
 
         embeds = create_embeddings_for_implicit_function(
             xyz_world=rays_points_world,
@@ -166,6 +171,12 @@ class NeRFMLP(torch.nn.Module):
         rays_colors = self._get_colors(features, directions)
 
         return ModelOutputs(raw_densities, rays_colors, {})
+
+    def _check_input(self, global_codes):
+        if global_codes is None:
+            return self.latent_dim == 0
+        else:
+            return global_codes.shape[-1] == self.latent_dim
 
 
 class MLPWithInputSkips(torch.nn.Module):

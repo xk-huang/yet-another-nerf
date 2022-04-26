@@ -7,7 +7,7 @@ from yanerf.utils.config import Config
 
 cfg_paths = [
     "tests/configs/pipelines/models/nerf_mlp.yml",
-    "tests/configs/pipelines/models/nerf_mlp_without_global_code.yml",
+    "tests/configs/pipelines/models/nerf_conditional_mlp.yml",
 ]
 
 
@@ -25,9 +25,9 @@ def test_NeRFMLP(cfg_path):
     print(model)
 
     B = 3
-    spatial = [4, 5]
+    spatial = [10, 1]
     data_shape_prefix = [B, *spatial]
-    num_pts_per_ray_dim = 2
+    num_pts_per_ray_dim = 64
 
     color_dim = cfg.model.color_dim
     latent_dim = cfg.model.latent_dim
@@ -41,7 +41,6 @@ def test_NeRFMLP(cfg_path):
         origins=torch.randn(*(data_shape_prefix + [3])).abs(),
         directions=torch.randn(*(data_shape_prefix + [3])).abs(),
         lengths=torch.randn(*(data_shape_prefix + [num_pts_per_ray_dim])).abs().sort(dim=-1)[0],
-        xys=torch.randn(*(data_shape_prefix + [2])),
         global_codes=global_codes,
     )
 
