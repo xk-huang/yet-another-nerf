@@ -279,7 +279,7 @@ def scatter_rays_to_image(
     image_sampling_grid: torch.Tensor,
     image_height: int,
     image_width: int,
-    bg_color: torch.Tensor,
+    bg_color: Optional[torch.Tensor] = None,
 ):
     batch_size, *tensor_spatial_shape, last_dim = tensor.shape
     _, *grid_spatial_shape, _ = image_sampling_grid.shape
@@ -291,9 +291,9 @@ def scatter_rays_to_image(
     flat_image_sampling_grid = flat_image_sampling_grid[..., None].expand(-1, -1, last_dim)
     flat_image_sampling_grid = flat_image_sampling_grid.long()
 
-    output_tensor = tensor.new_ones(batch_size, image_height, image_width, last_dim)
-    if bg_color.shape[-1] == last_dim:
-        output_tensor = output_tensor * bg_color
+    output_tensor = tensor.new_zeros(batch_size, image_height, image_width, last_dim)
+    if bg_color is not None and bg_color.shape[-1] == last_dim:
+        output_tensor = output_tensor + bg_color
     output_tensor = output_tensor.view(batch_size, -1, last_dim)
     output_tensor.scatter_(1, flat_image_sampling_grid, flat_tensor)
 

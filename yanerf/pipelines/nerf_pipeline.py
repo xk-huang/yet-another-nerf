@@ -18,8 +18,6 @@ from yanerf.utils.logging import get_logger
 from .builder import PIPELINES
 from .utils import PartialFunctionWrapper, ViewMetrics, sample_grid, scatter_rays_to_image
 
-logger = get_logger(__name__)
-
 
 @PIPELINES.register_module()
 class NeRFPipeline(torch.nn.Module):
@@ -38,6 +36,8 @@ class NeRFPipeline(torch.nn.Module):
     ) -> None:
         super().__init__()
 
+        self.logger = get_logger(__name__)
+
         self.ray_sampler = RAY_SAMPLERS.build(ray_sampler)
         self.render_image_height = ray_sampler.image_height
         self.render_image_width = ray_sampler.image_width
@@ -46,7 +46,7 @@ class NeRFPipeline(torch.nn.Module):
 
         # construct models with `self._construct_models()`
         if isinstance(model, Sequence) and (len(model) != num_passes):
-            logger.info(f"Rewrite `num_pass` from {num_passes} to {len(model)}.")
+            self.logger.info(f"Rewrite `num_pass` from {num_passes} to {len(model)}.")
             num_passes = len(model)
         self.num_passes = num_passes
         self.implicit_functions = self._construct_models(model)
@@ -163,15 +163,21 @@ class NeRFPipeline(torch.nn.Module):
 
         # [TODO] Visualize the monte-carlo pixel renders by splatting onto an image grid.
         if sampling_mode == RenderSamplingMode.MASK_SAMPLE:
-
             if self.output_rasterized_mc:
+                preds["sampled_grids"] = scatter_rays_to_image(
+                    torch.ones(*xys.shape[:-1], dtype=torch.float32, device=xys.device)[..., None],
+                    xys,
+                    self.render_image_height if image_height is None else image_height,
+                    self.render_image_width if image_width is None else image_width,
+                    None,
+                )
                 (
                     preds["rendered_images"],
                     preds["rendered_depths"],
                     preds["rendered_alpha_masks"],
                 ) = self._rasterize_mc_samples(
                     xys,
-                    bg_image_rgb if bg_image_rgb is not None else self.bg_color,  # type: ignore[arg-type]
+                    None,  # type: ignore[arg-type]
                     image_height,
                     image_width,
                     rendered.features,
@@ -221,7 +227,7 @@ class NeRFPipeline(torch.nn.Module):
             + "\n".join(f"{k:40s}: {w:1.2e}" for k, w in self.loss_weights.items())
             + "\n-------"
         )
-        logger.info(loss_weights_message)
+        self.logger.info(loss_weights_message)
 
     def _get_view_metrics(
         self,
@@ -241,15 +247,17 @@ class NeRFPipeline(torch.nn.Module):
         )
 
         prev_stage_raymarched = raymarched.prev_stage
+        prev_keys_prefix = keys_prefix
         while prev_stage_raymarched is not None:
+            prev_keys_prefix = prev_keys_prefix + "prev_stage_"
             metrics.update(
                 self.view_metrics(
                     image_sampling_grid=xys,
-                    images_pred=raymarched.features,
+                    images_pred=prev_stage_raymarched.features,
                     images=image_rgb,
-                    depths_pred=raymarched.depths,
+                    depths_pred=prev_stage_raymarched.depths,
                     depths=depth_map,
-                    keys_prefix=(keys_prefix + "prev_stage_"),
+                    keys_prefix=prev_keys_prefix,
                 )
             )
             prev_stage_raymarched = prev_stage_raymarched.prev_stage
@@ -261,10 +269,20 @@ class NeRFPipeline(torch.nn.Module):
         A helper function to compute the overall loss as the dot product
         of individual loss functions with the corresponding weights.
         """
-        losses_weighted = [preds[k] * float(w) for k, w in self.loss_weights.items() if (k in preds and w != 0.0)]
+        for k in self.loss_weights.keys():
+            if k not in preds.keys():
+                self.logger.warning(f"loss name is not found: {k}")
+
+        losses_weighted = [preds[k] * float(w) for k, w in self.loss_weights.items() if k in preds and w != 0.0]
+
         if len(losses_weighted) == 0:
             warnings.warn("No main objective found.")
             return None
+        elif len(losses_weighted) != len(self.loss_weights.keys()):
+            for k in self.loss_weights.keys():
+                if k not in preds.keys():
+                    self.logger.warning(f"loss name is not found: {k}")
+
         loss = sum(losses_weighted)
         assert torch.is_tensor(loss)
         return loss  # type: ignore[return-value]
