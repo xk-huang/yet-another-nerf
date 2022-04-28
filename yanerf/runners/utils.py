@@ -15,16 +15,16 @@ def warmup_lr_scheduler(optimizer, step, max_step, init_lr, max_lr):
         param_group["lr"] = lr
 
 
-def cosine_lr_scheduler(optimizer, epoch, lr_decay_epoch_interval, init_lr, min_lr, max_epoch):
+def cosine_lr_scheduler(optimizer, iter, lr_decay_iter_interval, init_lr, min_lr, num_iters):
     """Decay the learning rate"""
-    lr = (init_lr - min_lr) * 0.5 * (1.0 + math.cos(math.pi * (epoch / lr_decay_epoch_interval) / max_epoch)) + min_lr
+    lr = (init_lr - min_lr) * 0.5 * (1.0 + math.cos(math.pi * (iter / lr_decay_iter_interval) / num_iters)) + min_lr
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
 
-def step_lr_scheduler(optimizer, epoch, lr_decay_epoch_interval, init_lr, min_lr, lr_decay_rate):
+def step_lr_scheduler(optimizer, iter, lr_decay_iter_interval, init_lr, min_lr, lr_decay_rate):
     """Decay the learning rate"""
-    lr = max(min_lr, init_lr * (lr_decay_rate ** (epoch / lr_decay_epoch_interval)))
+    lr = max(min_lr, init_lr * (lr_decay_rate ** (iter / lr_decay_iter_interval)))
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
@@ -34,7 +34,7 @@ def create_lr_scheduler(optimizer, config):
         sched = partial(
             step_lr_scheduler,
             optimizer=optimizer,
-            lr_decay_epoch_interval=config["lr_decay_epoch_interval"],
+            lr_decay_iter_interval=config["lr_decay_iter_interval"],
             init_lr=config["init_lr"],
             min_lr=config["min_lr"],
             lr_decay_rate=config["lr_decay_rate"],
@@ -43,10 +43,10 @@ def create_lr_scheduler(optimizer, config):
         sched = partial(
             cosine_lr_scheduler,
             optimizer=optimizer,
-            lr_decay_epoch_interval=config["lr_decay_epoch_interval"],
+            lr_decay_iter_interval=config["lr_decay_iter_interval"],
             init_lr=config["init_lr"],
             min_lr=config["min_lr"],
-            max_epoch=config["num_epochs"],
+            num_iters=config["num_iters"],
         )
     else:
         raise ValueError
@@ -179,7 +179,7 @@ def create_stats(preds, prefixes=["loss_", "objective"]):
 
 def pause_to_debug():
     if is_main_process():
-        from IPython.core.debugger import set_trace
+        from IPython.core.debugger import set_trace  # type: ignore[import]
 
         set_trace()
 

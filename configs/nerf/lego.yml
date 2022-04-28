@@ -7,14 +7,14 @@ datasets:
     split: "val"
   - type: BlenderDataset
     base_dir: "data/nerf_synthetic/lego"
-    split: "test" 
+    split: "test"
 
 runner:
   output_dir: results/nerf/lego
   debug: False
   print_per_iter: 100
-  val_per_epoch: 100
-  save_per_epoch: 100
+  val_per_iter: 50000
+  save_per_iter: 10000
   init_lr: 5.0e-4
   weight_decay: 0.0
   # lr warmup
@@ -27,8 +27,8 @@ runner:
    # 0.99..99: num_decimal_epoch * num_decimal_rate = 1, rate ** num_epoch ~= 0.36
    # 0.99..95: num_decimal_epoch * num_decimal_rate = 0.1, rate ** num_epoch ~= 0.60
   lr_decay_rate: 0.1
-  lr_decay_epoch_interval: 2500
-  num_epochs: 2000
+  lr_decay_iter_interval: 250000
+  num_iters: 300000
   batch_size_list:
     - 4
     - 4
@@ -85,4 +85,3 @@ pipeline:
     density_noise_std_train: 0.2
     n_pts_per_ray_fine_evaluation: 128
     n_pts_per_ray_fine_training: 128
-  

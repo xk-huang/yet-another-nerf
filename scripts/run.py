@@ -5,22 +5,19 @@ import logging
 import os.path as osp
 import random
 import warnings
-from ensurepip import version
 from functools import lru_cache
+from math import ceil, floor
 from pathlib import Path
-from typing import NamedTuple
 
-import imageio
 import numpy as np
 import torch
 import torch.distributed as dist
-from imageio import imwrite
+from imageio import imwrite  # type: ignore[import]
 from torch.utils.data import Subset
 
 from yanerf.dataset.builder import DATASETS
 from yanerf.pipelines.builder import PIPELINES
-from yanerf.runners import utils
-from yanerf.runners.apis import eval_one_epoch, inference, train_one_epoch
+from yanerf.runners.apis import eval_one_epoch, train_one_epoch
 from yanerf.runners.utils import (
     create_loader,
     create_lr_scheduler,
@@ -33,7 +30,7 @@ from yanerf.runners.utils import (
     pause_to_debug,
 )
 from yanerf.utils.config import Config, DictAction
-from yanerf.utils.logging import get_logger, print_log
+from yanerf.utils.logging import get_logger
 from yanerf.utils.timer import Timer
 
 VIS_PREFIXES = ["rendered", "image_rgb"]
@@ -93,22 +90,11 @@ def main(args, config):
 
     # Prepare Debug Data
     if config.runner.debug:
-        warnings.warn("In DEBUG mode, some hyperparamters have been changed.")
-        config.runner.val_per_epoch = 1
-        config.runner.save_per_epoch = 1
-        config.runner.batch_size_list = [3 * world_size, 3 * world_size, 3 * world_size]
-
-        for index in (0, 1, 2):
-            subset_dataset = Subset(datasets[index], list(range(config.runner.batch_size_list[index] + 1)))
-            subset_dataset.data_wrapper = datasets[index].data_wrapper
-            datasets[index] = subset_dataset
-
-        config.runner.batch_size_list = [3] * 3
-        config.runner.num_epochs = 2
+        set_debug_env(config, world_size, datasets)
     else:
         if is_main_process():
             logger.info("Val dataset is to large, we should re-arrange the dataset...")  # FIXME
-        subset_dataset = Subset(datasets[1], list(range(0, len(datasets[1]), len(datasets[1]) // 8)))
+        subset_dataset = Subset(datasets[1], list(range(0, len(datasets[1]), max(1, len(datasets[1]) // 8))))
         subset_dataset.data_wrapper = datasets[1].data_wrapper
         datasets[1] = subset_dataset
 
@@ -140,6 +126,26 @@ def main(args, config):
         if is_main_process():
             logger.info(f"Data: Length of no.{i} dataset: {len(dataloader.dataset)}, dataloader: {len(dataloader)}")
         assert len(dataloader) > 0, f"The no.{i} dataloader is empty"
+
+    # Change iter-based runner to epoch-based runner according to the dataloaders
+    config.runner._num_iters = config.runner.num_iters
+    config.runner.num_epochs = ceil(config.runner.num_iters / len(dataloaders[0]))
+    config.runner.num_iters = config.runner.num_epochs * len(dataloaders[0])
+
+    config.runner.val_per_epoch = max(1, floor(config.runner.val_per_iter / len(dataloaders[0])))
+    config.runner.save_per_epoch = max(1, floor(config.runner.save_per_iter / len(dataloaders[0])))
+
+    if is_main_process():
+        logger.info("Modify iter-based runner to epoch-based runner according to the dataloaders.")
+        logger.info("After modification:")
+        _pair_keys = (
+            ("val_per_iter", "val_per_epoch"),
+            ("save_per_iter", "save_per_epoch"),
+            ("_num_iters", "num_iters"),
+        )
+        for (old_k, new_k) in _pair_keys:
+            logger.info(f"{old_k}: {getattr(config.runner, old_k)} -> {new_k}: {getattr(config.runner, new_k)}")
+        logger.info(f"num_epochs: {config.runner.num_epochs}")
 
     # Model
     if is_main_process():
@@ -192,6 +198,8 @@ def main(args, config):
         if is_main_process():
             logger.info(f"Training time {total_time_str}")
 
+        save_model(config.runner.output_dir, optimizer, model_without_ddp, config.runner.num_epochs - 1)
+
     # Testing
     if is_main_process():
         logger.info("Start Testing.")
@@ -201,6 +209,21 @@ def main(args, config):
     total_time_str = str(datetime.timedelta(seconds=int(_timer.since_last_check())))
     if is_main_process():
         logger.info(f"Testing time {total_time_str}")
+
+
+def set_debug_env(config, world_size, datasets):
+    warnings.warn("In DEBUG mode, some hyperparamters have been changed.")
+    config.runner.val_per_epoch = 1
+    config.runner.save_per_epoch = 1
+    config.runner.batch_size_list = [3 * world_size, 3 * world_size, 3 * world_size]
+
+    for index in (0, 1, 2):
+        subset_dataset = Subset(datasets[index], list(range(config.runner.batch_size_list[index] + 1)))
+        subset_dataset.data_wrapper = datasets[index].data_wrapper
+        datasets[index] = subset_dataset
+
+    config.runner.batch_size_list = [3] * 3
+    config.runner.num_epochs = 2
 
 
 def test(config, dataloader, device, model):
@@ -229,15 +252,10 @@ def train(
 ):
     _timer = Timer()
     for epoch in range(start_epoch, config.runner.num_epochs):
-        _timer.since_last_check()
 
         train_preds, train_stats = train_one_epoch(
             config.runner, epoch, model, train_dataloader, optimizer, scheduler, device
         )
-
-        total_time_str = str(datetime.timedelta(seconds=int(_timer.since_last_check())))
-        if is_main_process():
-            logger.info(f"Training One Epoch time {total_time_str}")
 
         _log_stats = {
             "epoch": epoch,
@@ -271,16 +289,19 @@ def train(
                     vis_batch_img(config.runner.output_dir, epoch, run_type, preds)
 
         if is_main_process() and (epoch + 1) % config.runner.save_per_epoch == 0:
-            save_obj = {
-                "model": model_without_ddp.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "config": config,
-                "epoch": epoch,
-            }
-            torch.save(save_obj, osp.join(config.runner.output_dir, "ckpts", "ckpts_%04d.pth" % epoch))
+            save_model(config.runner.output_dir, optimizer, model_without_ddp, epoch)
 
         if is_dist_avail_and_initialized():
             dist.barrier()
+
+
+def save_model(output_dir, optimizer, model_without_ddp, epoch):
+    save_obj = {
+        "model": model_without_ddp.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+    }
+    torch.save(save_obj, osp.join(output_dir, "ckpts", "ckpts_%04d.pth" % epoch))
 
 
 def vis_batch_img(output_dir, epoch, run_type, preds):

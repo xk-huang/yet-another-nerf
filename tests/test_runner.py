@@ -52,6 +52,7 @@ def test_runner_simple(use_cuda=False):
     pipeline = PIPELINES.build(pipeline_cfg.pipeline)
 
     runner_cfg = Config.fromfile("tests/configs/runner/runner.yml")
+
     print(runner_cfg.pretty_text)
     log_level = logging.DEBUG if runner_cfg.runner.get("debug", None) else logging.INFO
     logger = get_logger(
@@ -74,6 +75,10 @@ def test_runner_simple(use_cuda=False):
 
     data = [poses, focal_lengths, image_rgb]
     dataloader = create_loader(DummyDataset(*data), None, runner_cfg.runner.batch_size_train, 0, True, None, False)
+
+    from math import ceil
+
+    runner_cfg.runner.num_epochs = ceil(runner_cfg.runner.num_iters / len(dataloader))
 
     optimizer = torch.optim.Adam(pipeline.parameters(), lr=runner_cfg.runner.init_lr)
     scheduler = create_lr_scheduler(optimizer, runner_cfg.runner)

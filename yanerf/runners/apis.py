@@ -31,16 +31,10 @@ def train_one_epoch(
     header = LOG_HEADER.format("Train", epoch)
     print_per_iter = config.get("print_per_iter", 100)
 
-    if passed_iter % print_per_iter == 0:
-        lr_string = ",".join([f"{param_group['lr']:3e}" for param_group in optimizer.param_groups])
-        num_params = len(tuple(model.parameters()))
-        logger.info(f"{header}\tlr: {lr_string}\tnum_params: {num_params}.")
-
     model.train()
     sampler: Optional[DistributedSampler] = getattr(dataloader, "sampler", None)
     if isinstance(sampler, DistributedSampler):
         sampler.set_epoch(epoch)
-    scheduler(epoch=epoch)
 
     timer = Timer()
     data: Tuple[torch.Tensor, ...]
@@ -49,6 +43,7 @@ def train_one_epoch(
         data = tuple(_data.to(device, non_blocking=True) for _data in data)
         _times["data"] = timer.since_last_check()
 
+        scheduler(iter=passed_iter)
         if config["warmup_steps"] > 0 and passed_iter <= config["warmup_steps"]:
             warmup_lr_scheduler(optimizer, passed_iter, config["warmup_steps"], config["warmup_lr"], config["init_lr"])
 
@@ -73,9 +68,13 @@ def train_one_epoch(
 
         batch_size = dataloader.batch_size if dataloader.batch_size is not None else 0
         if passed_iter % print_per_iter == 0:
+            lr_string = ",".join([f"{param_group['lr']:3e}" for param_group in optimizer.param_groups])
+            num_params = len(tuple(model.parameters()))
+            logger.info(f"{header}\tlr: {lr_string}\tnum_params: {num_params}.")
+
             stats = create_stats(preds)
             log_string = "\t".join(
-                [f"[{i * batch_size}/{len(dataloader) * batch_size}][{passed_iter}]"]
+                [f"iter: {passed_iter}\tsampler: [{i * batch_size}/{len(dataloader) * batch_size}]"]
                 + [f"{k}: {v:.3f}" for k, v in _times.items()]
                 + [f"{k}: {v:.3f}" for k, v in stats.items()]
             )
@@ -128,7 +127,7 @@ def eval_one_epoch(
         if i % print_per_iter == 0:
             _stats = create_stats(preds)
             log_string = "\t".join(
-                [f"[{i * batch_size}/{len(dataloader.dataset)}]"]
+                [f"sampler: [{i * batch_size}/{len(dataloader.dataset)}]"]
                 + [f"{k}: {v:.3f}" for k, v in _times.items()]
                 + [f"{k}: {v:.3f}" for k, v in _stats.items()]
             )
