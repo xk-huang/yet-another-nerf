@@ -1,11 +1,54 @@
+from ast import Str
 import math
 import os
 from functools import partial
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Union
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
+import numpy as np
+from imageio import imwrite  # type: ignore[import]
+from functools import lru_cache
+from pathlib import Path
+from enum import Enum
+
+
+class RunType(Enum):
+    TRAIN = "Train"
+    VAL = "Val"
+    TEST = "Test"
+
+
+def to_img(tensor_img: torch.Tensor) -> np.ndarray:
+    return torch.clamp(tensor_img * 255, 0, 255).cpu().numpy().astype(np.uint8)
+
+
+def vis_batch_img(
+    preds,
+    run_type: RunType,
+    output_dir: Union[Path, Str],
+    output_start_idx: int,
+    output_end_idx: int,
+    file_name_prefix: str = "",
+    file_name_ext: str = ".png",
+    render_prefixes: List[str] = ["rendered_", "image_rgb_"],
+):
+    file_name_template = file_name_prefix + "{:05d}" + file_name_ext
+    for rendered_type, renders in preds.items():
+        if any(rendered_type.startswith(prefix) for prefix in render_prefixes):
+            _output_end_idx = output_start_idx + min(output_end_idx - output_start_idx, len(renders))
+            vis_dir = _get_vis_dir(output_dir, run_type, rendered_type)
+            for batch_idx, file_name_idx in enumerate(range(output_start_idx, _output_end_idx)):
+                imwrite(vis_dir / file_name_template.format(file_name_idx), to_img(renders[batch_idx]))
+
+
+@lru_cache()
+def _get_vis_dir(output_dir, run_type: RunType, rendered_type):
+    print(output_dir)
+    vis_dir = Path(output_dir) / "visualization" / run_type.value / rendered_type
+    vis_dir.mkdir(exist_ok=True, parents=True)
+    return vis_dir
 
 
 def warmup_lr_scheduler(optimizer, step, max_step, init_lr, max_lr):
@@ -177,7 +220,7 @@ def create_stats(preds, prefixes=["loss_", "objective"]):
     return {k: v.mean().item() for k, v in preds.items() if any([k.startswith(prefix) for prefix in prefixes])}
 
 
-def pause_to_debug():
+def pause_to_debug(config):
     if is_main_process():
         from IPython.core.debugger import set_trace  # type: ignore[import]
 

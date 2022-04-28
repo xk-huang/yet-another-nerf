@@ -7,16 +7,27 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
+
 from yanerf.pipelines.utils import EvaluationMode
 from yanerf.utils.logging import get_logger
 from yanerf.utils.timer import Timer
 
-from .utils import concat_all_gather, create_stats, is_dist_avail_and_initialized, warmup_lr_scheduler
+from .utils import (
+    concat_all_gather,
+    create_stats,
+    get_world_size,
+    is_dist_avail_and_initialized,
+    warmup_lr_scheduler,
+    vis_batch_img,
+    RunType,
+    get_rank,
+)
 
 LOG_HEADER = "{}\tEpoch:\t[{}]"
 
 
 def train_one_epoch(
+    run_type: RunType,
     config: Dict,
     epoch: int,
     model: torch.nn.Module,
@@ -28,7 +39,7 @@ def train_one_epoch(
     logger = _get_logger(config)
 
     passed_iter = epoch * len(dataloader)
-    header = LOG_HEADER.format("Train", epoch)
+    header = LOG_HEADER.format(run_type.value, epoch)
     print_per_iter = config.get("print_per_iter", 100)
 
     model.train()
@@ -83,20 +94,24 @@ def train_one_epoch(
         passed_iter += 1
         timer.since_last_check()
 
-    return preds, create_stats(preds)
+    return create_stats(preds)
 
 
 @torch.no_grad()
 def eval_one_epoch(
+    run_type: RunType,
     config: Dict,
     epoch: int,
     model: torch.nn.Module,
     dataloader: DataLoader,
     device: torch.device = torch.device("cuda"),
+    save_image: bool = True,
 ):
     logger = _get_logger(config)
     print_per_iter = config.get("print_per_iter", 50)
-    header = LOG_HEADER.format("Eval", epoch)
+    header = LOG_HEADER.format(run_type.value, epoch)
+    rank = get_rank()
+    world_size = get_world_size()
 
     model.eval()
     timer = Timer()
@@ -133,10 +148,21 @@ def eval_one_epoch(
             )
             logger.info(f"{header}: {log_string}")
 
+        if save_image:
+            start_idx = (i * world_size + rank) * batch_size
+            end_idx = min(len(dataloader.dataset), start_idx + batch_size)
+            vis_batch_img(
+                preds,
+                run_type,
+                config.output_dir,
+                start_idx,
+                end_idx,
+                f"{epoch:05d}_" if run_type == RunType.TRAIN else "",
+            )
         timer.since_last_check()
 
     if dataloader.drop_last is True:
-        warnings.warn("Imcomplete eval due to `drop_last`.")
+        raise ValueError("Imcomplete eval due to `drop_last`.")
 
     for k, v in metric_stats.items():
         metric_stats[k] = torch.mean(torch.concat(v, dim=0)[: len(dataloader.dataset)])
@@ -148,7 +174,7 @@ def eval_one_epoch(
     )
     logger.info(f"{header}: {log_string}")
 
-    return preds, stats
+    return stats
 
 
 def _get_logger(config):

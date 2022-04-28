@@ -5,20 +5,19 @@ import logging
 import os.path as osp
 import random
 import warnings
-from functools import lru_cache
 from math import ceil, floor
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.distributed as dist
-from imageio import imwrite  # type: ignore[import]
 from torch.utils.data import Subset
 
 from yanerf.dataset.builder import DATASETS
 from yanerf.pipelines.builder import PIPELINES
 from yanerf.runners.apis import eval_one_epoch, train_one_epoch
 from yanerf.runners.utils import (
+    RunType,
     create_loader,
     create_lr_scheduler,
     create_sampler,
@@ -33,12 +32,6 @@ from yanerf.utils.config import Config, DictAction
 from yanerf.utils.logging import get_logger
 from yanerf.utils.timer import Timer
 
-VIS_PREFIXES = ["rendered", "image_rgb"]
-
-
-def to_img(tensor_img: torch.Tensor) -> np.ndarray:
-    return torch.clamp(tensor_img * 255, 0, 255).cpu().numpy().astype(np.uint8)
-
 
 def get_version(path: Path):
     versions = path.parent.glob(f"{path.stem}_version_*")
@@ -46,8 +39,16 @@ def get_version(path: Path):
 
 
 def main(args, config):
-
+    # Initialize Distributed Environment
     init_distributed_mode(args)
+    rank = get_rank()
+    world_size = get_world_size()
+
+    seed = args.seed + rank
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.benchmark = True
 
     # Output Directory
     if args.output_dir is not None:
@@ -55,9 +56,13 @@ def main(args, config):
 
     output_dir = Path(config.runner.output_dir)
 
-    if output_dir.exists():
+    if output_dir.exists() and not args.render_only and not args.test_only:
+        # Distributed data (directory) access, must wait for sync.
         output_dir = output_dir.parent / f"{output_dir.stem}_version_{get_version(output_dir)}"
         config.runner.output_dir = str(output_dir)
+
+        if is_dist_avail_and_initialized():
+            dist.barrier()
 
     if is_main_process():
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,15 +78,8 @@ def main(args, config):
 
     if is_main_process():
         logger.info("Set up Environment.")
-
-    rank = get_rank()
-    world_size = get_world_size()
-
-    seed = args.seed + rank
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.benchmark = True
+        logger.info(f"World Size: {world_size}")
+    logger.info(f"Rank: {rank} | Seed: {seed}")
 
     # Data: Dataset
     if is_main_process():
@@ -90,13 +88,13 @@ def main(args, config):
 
     # Prepare Debug Data
     if config.runner.debug:
-        set_debug_env(config, world_size, datasets)
+        setup_debug_env(config.runner, world_size, datasets)
     else:
         if is_main_process():
             logger.info("Val dataset is to large, we should re-arrange the dataset...")  # FIXME
-        subset_dataset = Subset(datasets[1], list(range(0, len(datasets[1]), max(1, len(datasets[1]) // 8))))
-        subset_dataset.data_wrapper = datasets[1].data_wrapper
-        datasets[1] = subset_dataset
+        # subset_dataset = Subset(datasets[1], list(range(0, len(datasets[1]), max(1, len(datasets[1]) // 8))))
+        # subset_dataset.data_wrapper = datasets[1].data_wrapper
+        # datasets[1] = subset_dataset
 
     # Data: Sampler
     samplers = [
@@ -124,24 +122,22 @@ def main(args, config):
 
     for i, dataloader in enumerate(dataloaders):
         if is_main_process():
-            logger.info(f"Data: Length of no.{i} dataset: {len(dataloader.dataset)}, dataloader: {len(dataloader)}")
-        assert len(dataloader) > 0, f"The no.{i} dataloader is empty"
+            logger.info(f"Data: Length of dataset No.{i}: {len(dataloader.dataset)}, dataloader: {len(dataloader)}")
+        if len(dataloader) == 0:
+            raise ValueError(f"The dataloader No.{i} is empty at rank {rank}")
 
     # Change iter-based runner to epoch-based runner according to the dataloaders
-    config.runner._num_iters = config.runner.num_iters
-    config.runner.num_epochs = ceil(config.runner.num_iters / len(dataloaders[0]))
-    config.runner.num_iters = config.runner.num_epochs * len(dataloaders[0])
-
-    config.runner.val_per_epoch = max(1, floor(config.runner.val_per_iter / len(dataloaders[0])))
-    config.runner.save_per_epoch = max(1, floor(config.runner.save_per_iter / len(dataloaders[0])))
+    setup_iter_based_runner(config, dataloaders[0])
 
     if is_main_process():
         logger.info("Modify iter-based runner to epoch-based runner according to the dataloaders.")
         logger.info("After modification:")
+
         _pair_keys = (
             ("val_per_iter", "val_per_epoch"),
             ("save_per_iter", "save_per_epoch"),
-            ("_num_iters", "num_iters"),
+            ("num_iters_on_one_gpu", "num_iters"),
+            ("lr_decay_iter_interval_on_one_gpu", "lr_decay_iter_interval"),
         )
         for (old_k, new_k) in _pair_keys:
             logger.info(f"{old_k}: {getattr(config.runner, old_k)} -> {new_k}: {getattr(config.runner, new_k)}")
@@ -175,7 +171,7 @@ def main(args, config):
         optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch = checkpoint["epoch"] + 1
         if is_main_process():
-            logger.info(f"Resume checkpoint from {args.checkpoint}")
+            logger.info(f"Resume checkpoint from: {args.checkpoint}")
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -184,7 +180,7 @@ def main(args, config):
         model_without_ddp = model
 
     if args.debug:
-        pause_to_debug()
+        pause_to_debug(config)
 
     # Training
     _timer = Timer()
@@ -192,54 +188,75 @@ def main(args, config):
         if is_main_process():
             logger.info("Start Training.")
 
-        train(config, logger, *dataloaders[:2], device, model, optimizer, scheduler, start_epoch, model_without_ddp)
+        train(
+            config.runner, logger, *dataloaders[:2], device, model, optimizer, scheduler, start_epoch, model_without_ddp
+        )
 
         total_time_str = str(datetime.timedelta(seconds=int(_timer.since_last_check())))
         if is_main_process():
-            logger.info(f"Training time {total_time_str}")
-
-        save_model(config.runner.output_dir, optimizer, model_without_ddp, config.runner.num_epochs - 1)
+            logger.info(f"Training time: {total_time_str}")
 
     # Testing
     if is_main_process():
         logger.info("Start Testing.")
 
-    test(config, dataloaders[2], device, model)
+    test(config.runner, dataloaders[2], device, model)
 
     total_time_str = str(datetime.timedelta(seconds=int(_timer.since_last_check())))
     if is_main_process():
-        logger.info(f"Testing time {total_time_str}")
+        logger.info(f"Testing time: {total_time_str}")
 
 
-def set_debug_env(config, world_size, datasets):
-    warnings.warn("In DEBUG mode, some hyperparamters have been changed.")
-    config.runner.val_per_epoch = 1
-    config.runner.save_per_epoch = 1
-    config.runner.batch_size_list = [3 * world_size, 3 * world_size, 3 * world_size]
+def setup_iter_based_runner(config, dataloader):
+    iters_per_epoch = len(dataloader) * get_world_size() * dataloader.batch_size
+
+    config.runner.num_iters_on_one_gpu = config.runner.num_iters
+    config.runner.num_epochs = ceil(config.runner.num_iters / iters_per_epoch)
+    config.runner.num_iters = config.runner.num_epochs * len(dataloader)
+
+    config.runner.lr_decay_iter_interval_on_one_gpu = config.runner.lr_decay_iter_interval
+    config.runner.lr_decay_iter_interval = config.runner.lr_decay_iter_interval * (
+        config.runner.num_iters / config.runner.num_iters_on_one_gpu
+    )
+
+    config.runner.val_per_epoch = max(1, floor(config.runner.val_per_iter / iters_per_epoch))
+    config.runner.save_per_epoch = max(1, floor(config.runner.save_per_iter / iters_per_epoch))
+
+    return None
+
+
+def setup_debug_env(runner_config, world_size, datasets):
+    if is_main_process():
+        warnings.warn("In DEBUG mode, some hyperparamters have been changed.")
+
+    runner_config.val_per_epoch = 1
+    runner_config.save_per_epoch = 1
+    runner_config.batch_size_list = [3 * world_size, 3 * world_size, 3 * world_size]
 
     for index in (0, 1, 2):
-        subset_dataset = Subset(datasets[index], list(range(config.runner.batch_size_list[index] + 1)))
+        subset_dataset = Subset(datasets[index], list(range(runner_config.batch_size_list[index] + 1)))
         subset_dataset.data_wrapper = datasets[index].data_wrapper
         datasets[index] = subset_dataset
+    runner_config.batch_size_list = [3] * 3
 
-    config.runner.batch_size_list = [3] * 3
-    config.runner.num_epochs = 2
+    runner_config.num_iters = 1
+    runner_config.print_per_iter = 1
+    runner_config.save_per_iter = 1
+    runner_config.val_per_iter = 1
 
 
-def test(config, dataloader, device, model):
-    test_preds, test_stats = eval_one_epoch(config.runner, -1, model, dataloader, device)
+def test(runner_config, dataloader, device, model):
+    test_stats = eval_one_epoch(RunType.TEST, runner_config, -1, model, dataloader, device)
     log_stats = {
         **{f"test_{k}": v for k, v in test_stats.items()},
     }
     if is_main_process():
-        with open(osp.join(config.runner.output_dir, "test_stats.json"), "a") as f:
+        with open(osp.join(runner_config.output_dir, "test_stats.json"), "a") as f:
             f.write(json.dumps(log_stats) + "\n")
-
-        vis_batch_img(config.runner.output_dir, -1, "test", test_preds)
 
 
 def train(
-    config,
+    runner_config,
     logger,
     train_dataloader,
     val_dataloader,
@@ -251,10 +268,11 @@ def train(
     model_without_ddp,
 ):
     _timer = Timer()
-    for epoch in range(start_epoch, config.runner.num_epochs):
+    logger.info(f"Epoch range: {start_epoch} -> {runner_config.num_epochs}")
+    for epoch in range(start_epoch, runner_config.num_epochs):
 
-        train_preds, train_stats = train_one_epoch(
-            config.runner, epoch, model, train_dataloader, optimizer, scheduler, device
+        train_stats = train_one_epoch(
+            RunType.TRAIN, runner_config, epoch, model, train_dataloader, optimizer, scheduler, device
         )
 
         _log_stats = {
@@ -262,37 +280,37 @@ def train(
             **{f"train_{k}": v for k, v in train_stats.items()},
         }
         if is_main_process():
-            with open(osp.join(config.runner.output_dir, "train_stats.json"), "a") as f:
+            with open(osp.join(runner_config.output_dir, "train_stats.json"), "a") as f:
                 f.write(json.dumps(_log_stats) + "\n")
 
-        if (epoch + 1) % config.runner.val_per_epoch == 0:
+        if (epoch + 1) % runner_config.val_per_epoch == 0:
             if is_main_process():
-                logger.info(f"Start val at epoch {epoch}")
+                logger.info(f"Start val at epoch: {epoch}")
 
             _timer.since_last_check()
 
-            val_preds, val_stats = eval_one_epoch(config.runner, epoch, model, val_dataloader, device)
+            val_stats = eval_one_epoch(RunType.VAL, runner_config, epoch, model, val_dataloader, device)
 
             total_time_str = str(datetime.timedelta(seconds=int(_timer.since_last_check())))
             if is_main_process():
-                logger.info(f"Validating One Epoch time {total_time_str}")
+                logger.info(f"Validating One Epoch time: {total_time_str}")
 
             if is_main_process():
                 _log_stats = {
                     "epoch": epoch,
                     **{f"val_{k}": v for k, v in val_stats.items()},
                 }
-                with open(osp.join(config.runner.output_dir, "val_stats.json"), "a") as f:
+                with open(osp.join(runner_config.output_dir, "val_stats.json"), "a") as f:
                     f.write(json.dumps(_log_stats) + "\n")
 
-                for run_type, preds in zip(("train", "val"), (train_preds, val_preds)):
-                    vis_batch_img(config.runner.output_dir, epoch, run_type, preds)
-
-        if is_main_process() and (epoch + 1) % config.runner.save_per_epoch == 0:
-            save_model(config.runner.output_dir, optimizer, model_without_ddp, epoch)
+        if is_main_process() and (epoch + 1) % runner_config.save_per_epoch == 0:
+            save_model(runner_config.output_dir, optimizer, model_without_ddp, epoch)
 
         if is_dist_avail_and_initialized():
             dist.barrier()
+
+    if is_main_process():
+        save_model(runner_config.output_dir, optimizer, model_without_ddp, epoch)
 
 
 def save_model(output_dir, optimizer, model_without_ddp, epoch):
@@ -304,24 +322,6 @@ def save_model(output_dir, optimizer, model_without_ddp, epoch):
     torch.save(save_obj, osp.join(output_dir, "ckpts", "ckpts_%04d.pth" % epoch))
 
 
-def vis_batch_img(output_dir, epoch, run_type, preds):
-    for k, v in preds.items():
-        if any(k.startswith(prefix) for prefix in VIS_PREFIXES):
-            vis_dir = _get_vis_dir(output_dir, run_type, k)
-            for batch_id, _v in enumerate(v):
-                imwrite(
-                    vis_dir / f"{run_type}_{k}_{epoch}_{batch_id}.png",
-                    to_img(_v),
-                )
-
-
-@lru_cache()
-def _get_vis_dir(output_dir, run_type, k):
-    vis_dir = Path(output_dir) / "visualization" / f"{run_type}_{k}"
-    vis_dir.mkdir(exist_ok=True, parents=True)
-    return vis_dir
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="./configs/pretrain.yaml")
@@ -330,15 +330,15 @@ if __name__ == "__main__":
     parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
-    parser.add_argument("--dist-url", default="env://", help="url used to set up distributed training")
+    parser.add_argument("--world_size", default=1, type=int, help="number of distributed processes")
+    parser.add_argument("--dist_url", default="env://", help="url used to set up distributed training")
     parser.add_argument("--distributed", default=True, type=bool)
     parser.add_argument("--gpu", default=None, help="No need to specify, `init_distributed_mode` takes care of it.")
-    parser.add_argument("--test-only", action="store_true")
-    parser.add_argument("--render-only", action="store_true")
+    parser.add_argument("--test_only", action="store_true")
+    parser.add_argument("--render_only", action="store_true")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
-        "--cfg-options",
+        "--cfg_options",
         nargs="+",
         action=DictAction,
         help="override some settings in the used config, the key-value pair "
