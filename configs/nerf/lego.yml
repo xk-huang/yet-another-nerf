@@ -13,7 +13,7 @@ runner:
   output_dir: results/nerf/lego
   debug: False
   print_per_iter: 100
-  val_per_iter: 50000
+  val_per_iter: 20000
   save_per_iter: 10000
   init_lr: 5.0e-4
   weight_decay: 0.0

@@ -1,26 +1,25 @@
 import logging
 import os.path as osp
-import warnings
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
-
 from yanerf.pipelines.utils import EvaluationMode
+from yanerf.utils.config import ConfigDict
 from yanerf.utils.logging import get_logger
 from yanerf.utils.timer import Timer
 
 from .utils import (
+    RunType,
     concat_all_gather,
     create_stats,
+    get_rank,
     get_world_size,
     is_dist_avail_and_initialized,
-    warmup_lr_scheduler,
     vis_batch_img,
-    RunType,
-    get_rank,
+    warmup_lr_scheduler,
 )
 
 LOG_HEADER = "{}\tEpoch:\t[{}]"
@@ -100,7 +99,7 @@ def train_one_epoch(
 @torch.no_grad()
 def eval_one_epoch(
     run_type: RunType,
-    config: Dict,
+    config: ConfigDict,
     epoch: int,
     model: torch.nn.Module,
     dataloader: DataLoader,
@@ -157,7 +156,7 @@ def eval_one_epoch(
                 config.output_dir,
                 start_idx,
                 end_idx,
-                f"{epoch:05d}_" if run_type == RunType.TRAIN else "",
+                "" if run_type == RunType.TEST else f"{epoch:05d}_",
             )
         timer.since_last_check()
 

@@ -1,23 +1,22 @@
-from ast import Str
 import math
 import os
-from functools import partial
-from typing import Callable, Optional, List, Union
+from ast import Str
+from enum import Enum
+from functools import lru_cache, partial
+from pathlib import Path
+from typing import Callable, List, Optional, Union
 
+import numpy as np
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
-import numpy as np
 from imageio import imwrite  # type: ignore[import]
-from functools import lru_cache
-from pathlib import Path
-from enum import Enum
+from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
 
 
 class RunType(Enum):
-    TRAIN = "Train"
-    VAL = "Val"
-    TEST = "Test"
+    TRAIN = "train"
+    VAL = "val"
+    TEST = "test"
 
 
 def to_img(tensor_img: torch.Tensor) -> np.ndarray:
@@ -45,7 +44,6 @@ def vis_batch_img(
 
 @lru_cache()
 def _get_vis_dir(output_dir, run_type: RunType, rendered_type):
-    print(output_dir)
     vis_dir = Path(output_dir) / "visualization" / run_type.value / rendered_type
     vis_dir.mkdir(exist_ok=True, parents=True)
     return vis_dir
