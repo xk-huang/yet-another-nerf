@@ -7,5 +7,5 @@ class IdentityMapper(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
 
-    def forward(self, *args):
-        return args
+    def forward(self, **kwargs):
+        return kwargs

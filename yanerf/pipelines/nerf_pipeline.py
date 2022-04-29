@@ -1,7 +1,6 @@
 import collections
 import dataclasses
 import math
-import warnings
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
 import torch
@@ -18,6 +17,8 @@ from yanerf.utils.logging import get_logger
 from .builder import PIPELINES
 from .utils import PartialFunctionWrapper, ViewMetrics, sample_grid, scatter_rays_to_image
 
+from yanerf.pipelines.feature_extractors import FEATURE_EXTRACTORS
+
 
 @PIPELINES.register_module()
 class NeRFPipeline(torch.nn.Module):
@@ -25,6 +26,7 @@ class NeRFPipeline(torch.nn.Module):
         self,
         ray_sampler: ConfigDict,
         model: Union[ConfigDict, Sequence[ConfigDict]],
+        feature_extractor: Union[ConfigDict, Sequence[ConfigDict]],
         renderer: ConfigDict,
         chunk_size_grid: int,
         num_passes: int,
@@ -51,6 +53,9 @@ class NeRFPipeline(torch.nn.Module):
         self.num_passes = num_passes
         self.implicit_functions = self._construct_models(model)
 
+        # construct feature extractors with `self._construct_feature_extractors()`
+        self.feature_extractors = self._construct_feature_extractors(feature_extractor)
+
         self.renderer = RENDERERS.build(renderer)
         bg_color = renderer.bg_color
         if not isinstance(bg_color, torch.Tensor):
@@ -68,6 +73,16 @@ class NeRFPipeline(torch.nn.Module):
 
         # log_vars: List[str]
 
+    def _construct_feature_extractors(self, feature_extractor_cfg):
+        if not isinstance(feature_extractor_cfg, Sequence):
+            feature_extractor_cfg = [feature_extractor_cfg]
+
+        feature_extractor_list = [
+            PartialFunctionWrapper(FEATURE_EXTRACTORS.build(_feature_extractor_cfg))
+            for _feature_extractor_cfg in feature_extractor_cfg
+        ]
+        return torch.nn.ModuleList(feature_extractor_list)
+
     def _construct_models(self, model_cfg) -> torch.nn.ModuleList:
         if not isinstance(model_cfg, Sequence):
             model_cfg = [model_cfg] * self.num_passes
@@ -83,7 +98,7 @@ class NeRFPipeline(torch.nn.Module):
         image_width: Optional[int] = None,
         min_depth: Optional[float] = None,
         max_depth: Optional[float] = None,
-        global_codes: Optional[torch.Tensor] = None,
+        # global_codes: Optional[torch.Tensor] = None,
         # fg_probability: Optional[torch.Tensor],
         mask_crop: Optional[torch.Tensor] = None,
         # sequence_name: Optional[List[str]],
@@ -91,6 +106,7 @@ class NeRFPipeline(torch.nn.Module):
         image_rgb: Optional[torch.Tensor] = None,
         depth_map: Optional[torch.Tensor] = None,
         evaluation_mode: EvaluationMode = EvaluationMode.EVALUATION,
+        **kwargs,
     ):
         """
         Args:
@@ -143,8 +159,16 @@ class NeRFPipeline(torch.nn.Module):
         else:
             bg_color = None
 
+        extracted_features = collections.defaultdict(list)
+        for feature_extractor in self.feature_extractors:
+            _extracted_feature = feature_extractor(**kwargs)
+            for k, v in _extracted_feature.items():
+                extracted_features[k].append(v)
+        for k, v in extracted_features.items():
+            extracted_features[k] = torch.stack(v, dim=1)
+
         for func in self.implicit_functions:
-            func.bind_args(global_codes=global_codes)
+            func.bind_args(**extracted_features)
 
         rendered: RendererOutput = self._render(
             *ray_bundle,
@@ -152,7 +176,6 @@ class NeRFPipeline(torch.nn.Module):
             sampling_mode=sampling_mode,
             implicit_functions=self.implicit_functions,
             # kwargs
-            global_codes=global_codes,
             evaluation_mode=evaluation_mode,
         )
 
@@ -276,7 +299,7 @@ class NeRFPipeline(torch.nn.Module):
         losses_weighted = [preds[k] * float(w) for k, w in self.loss_weights.items() if k in preds and w != 0.0]
 
         if len(losses_weighted) == 0:
-            warnings.warn("No main objective found.")
+            self.logger.warning("No main objective found.")
             return None
         elif len(losses_weighted) != len(self.loss_weights.keys()):
             for k in self.loss_weights.keys():

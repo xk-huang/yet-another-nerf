@@ -14,6 +14,8 @@ pre-commit install
 pip install -e .
 ```
 
+(Note: changes only work for installed package)
+
 Or use pip to install packages:
 
 ```shell
@@ -49,7 +51,7 @@ Dataset: <https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdf
 ## Usage
 
 ```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per-node=8 scripts/run.py --config $config [--output-dir $OUTPUT-DIR] [--checkpoint $CHECKPOINT-PATH] [--device $DEVICE ("cuda" or "cpu")] [--test-only] [--debug] {--cfg_options "xxx=yyy"}
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc_per_node=8 scripts/run.py --config $config [--output_dir $OUTPUT_DIR] [--checkpoint $CHECKPOINT_PATH] [--device $DEVICE ("cuda" or "cpu")] [--test_only] [--debug] {--cfg_options "xxx=yyy"}
 ```
 
 ## Performance
@@ -67,15 +69,16 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per
 ### Structure
 
 1. pipelines/
-    the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function, and used in `renderer`)
+    - the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function, and used in `renderer`)
     [TODO]: `global_codes` is coupled with through the pipeline (include pipeline, renderer, and network), but this variable is only used in network)
     loss computing: to be compatible with distributed evaluation: per-sample losses are returned, with a `torch.mean` calling in the `runner.apis`.
+    - **undefined args are handled by `**kwargs`** (are then fed into `feature_extractor`).
 
     1. networks/
         - ray_bundle to points: (origins, directions, lengths)
         - input dim check.
         - The networks are hard to initialized, need stochastic sampling to break the bad initialization: `pipeline.ray_sampler.stratified_point_sampling_training` (main) & `pipeline.renderer.density_noise_std_train`
-        - Currently, `networks` only take in `global_codes`
+        - Currently, `networks` only take in `global_codes`, **undefined args are handled by `**kwargs`**
 
     2. renderer/
         - ray_point_finer, sample_pdf
@@ -94,13 +97,14 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per
         - Supports custom `min/max_depth` & `image_width, image_height`, `xy_grid` from `image_width, image_height` leverages `functools.lru_cache`
 
     4. feature_extractors/
-        - takes in keyword args from the extra args from the input of `pipeline`, and return keyword args. (currently only return `global_codes`)
+        - takes in **only keyword args** from the extra args from the input of `pipeline`, and return a **dict** with keyword args (currently must return `global_codes`)
+        - There may be multiple feature_extractors, so **undefined args are handled by `**kwargs`**.
 
 2. dataset/
     - the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function)
     - the range of images should be normalized to `[0, 1]` to compatible with the sigmoid activation.
     - define a `dataset_bundle: NamedTuple` in the `Dataset`; in `runner.apis` wraps the data accordingly.
-        - The keys of the arguments should be the same as those in `pipeline`, `feature_extractor`.
+        - **The keys of the arguments should be the same as those in `pipeline`, `feature_extractor`**.
         - Currently, `networks` only take in `global_codes`
 
 3. runner/

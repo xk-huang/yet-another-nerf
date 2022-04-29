@@ -8,8 +8,6 @@ from yanerf.utils.logging import get_logger
 from .builder import MODELS
 from .utils import LinearWithRepeat, create_embeddings_for_implicit_function, ray_bundle_to_ray_points
 
-logger = get_logger(__name__)
-
 
 class ModelOutputs(NamedTuple):
     raw_densities: torch.Tensor
@@ -36,6 +34,8 @@ class NeRFMLP(torch.nn.Module):
         color_dim: int = 3,
     ) -> None:
         super().__init__()
+        self.logger = get_logger(__name__)
+
         self.n_layers = n_layers
         self.input_skips = input_skips
         self.n_harmonic_functions_xyz: int = n_harmonic_functions_xyz
@@ -48,6 +48,9 @@ class NeRFMLP(torch.nn.Module):
         self.input_xyz: bool = input_xyz
         self.input_dir: bool = input_dir
         self.color_dim: int = color_dim
+
+        if latent_dim > 0:
+            self.logger.info(f"Model, use `global_codes`, latent_dim = {latent_dim}.")
 
         self.harmonic_embedding_xyz = HarmonicEmbedding(
             self.n_harmonic_functions_xyz, append_input=self.harmonic_functions_xyz_append_intput
@@ -145,6 +148,7 @@ class NeRFMLP(torch.nn.Module):
                 where points is a [N_TGT x N x 3] tensor of world coords,
                 and pooled_features is a [N_TGT x ... x N_SRC x latent_dim] tensor
                 of the features pooled from the context images.
+            global_codes: a global codes with shape of [B, N_latents, latent_dim]
 
         Returns:
             rays_densities: A tensor of shape `(minibatch, ..., num_points_per_ray, 1)`

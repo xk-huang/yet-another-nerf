@@ -18,6 +18,9 @@ pipeline = dict(
         "loss_prev_stage_rgb_mse": 1.0,
     },
     output_rasterized_mc=True,
+    feature_extractor=dict(
+        type="IdentityMapper"
+    )
 )
 
 del Config, model_cfg, ray_sampler_cfg, renderer_cfg

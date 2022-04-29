@@ -34,6 +34,36 @@ def test_on_cuda():
     test_pipeline()
 
 
+def test_pipeline_global_codes():
+    pipeline_cfg = Config.fromfile(osp.join("tests/configs/pipelines/nerf_pipeline_cfg_with_conditional_mlp.py"))
+    print(pipeline_cfg.filename)
+    pipeline_cfg.pipeline.renderer.blend_output = True
+    pipeline_cfg.pipeline.renderer.density_noise_std_train = 0.0
+    print(pipeline_cfg.pretty_text)
+
+    pipeline = PIPELINES.build(pipeline_cfg.pipeline)
+
+    save_dir = Path("tests/tmp")
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    B = 3
+    poses = torch.randn(B, 3, 4)
+    focal_lengths = torch.ones(B) * 500
+
+    bg_image_rgb = imageio.imread("tests/data/image.png")
+    bg_image_rgb = torch.Tensor(bg_image_rgb)[None, ..., :3].expand(B, -1, -1, -1)
+    imageio.imwrite(save_dir / "image.png", bg_image_rgb.cpu().numpy()[0, ..., :3])
+    bg_image_rgb = bg_image_rgb.float() / 255.0
+    global_codes = torch.randn(B, pipeline_cfg.pipeline.model.latent_dim)
+    _ = pipeline(
+        poses=poses,
+        focal_lengths=focal_lengths,
+        bg_image_rgb=bg_image_rgb,
+        evaluation_mode=EvaluationMode.TRAINING,
+        global_codes=global_codes,
+    )
+
+
 def test_pipeline():
     pipeline_cfg = Config.fromfile(osp.join("tests/configs/pipelines/nerf_pipeline_cfg_with_zero_outputer.py"))
     print(pipeline_cfg.filename)

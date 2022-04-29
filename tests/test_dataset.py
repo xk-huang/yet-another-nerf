@@ -6,6 +6,9 @@ from yanerf.runners.utils import create_loader, create_sampler, get_rank, get_wo
 from yanerf.utils.config import Config
 from yanerf.utils.logging import get_logger
 
+import os
+
+os.makedirs("tests/tmp/", exist_ok=True)
 logger = get_logger(__name__, log_file="tests/tmp/log.log")
 
 
@@ -13,8 +16,10 @@ def test_dataset():
     cfg = Config.fromfile("tests/configs/data/dataset.yml")
     cfg.dataset["debug"] = True
     print(cfg.pretty_text)
-    dataset: BlenderDataset = DATASETS.build(cfg.dataset)
-
+    try:
+        dataset: BlenderDataset = DATASETS.build(cfg.dataset)
+    except FileNotFoundError:
+        return
     sampler = create_sampler(dataset, shuffle=True, rank=get_rank(), world_size=get_world_size())
 
     batch_size = 3

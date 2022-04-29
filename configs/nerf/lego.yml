@@ -18,7 +18,7 @@ runner:
   init_lr: 5.0e-4
   weight_decay: 0.0
   # lr warmup
-  warmup_steps: 100
+  warmup_steps: 1000
   warmup_lr: 1.0e-5
   linear_scale: True
   # lr decay
@@ -81,7 +81,9 @@ pipeline:
     - 0.0
     - 0.0
     - 0.0
-    blend_output: true
+    blend_output: false
     density_noise_std_train: 0.2
     n_pts_per_ray_fine_evaluation: 128
     n_pts_per_ray_fine_training: 128
+  feature_extractor:
+    type: IdentityMapper
