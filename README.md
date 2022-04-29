@@ -67,14 +67,16 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per
 ### Structure
 
 1. pipelines/
-    pipeline
     the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function, and used in `renderer`)
     [TODO]: `global_codes` is coupled with through the pipeline (include pipeline, renderer, and network), but this variable is only used in network)
     loss computing: to be compatible with distributed evaluation: per-sample losses are returned, with a `torch.mean` calling in the `runner.apis`.
+
     1. networks/
         - ray_bundle to points: (origins, directions, lengths)
         - input dim check.
         - The networks are hard to initialized, need stochastic sampling to break the bad initialization: `pipeline.ray_sampler.stratified_point_sampling_training` (main) & `pipeline.renderer.density_noise_std_train`
+        - Currently, `networks` only take in `global_codes`
+
     2. renderer/
         - ray_point_finer, sample_pdf
         - background_deltas / background_opacity = 1e10, and use alpha mask to blend bg_color
@@ -82,6 +84,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per
         - [FIXME]: the default `bg_color` is 0.0
         - `density_noise_std`, in original paper?
         `- blend_output=False`, the foreground mask is 1, but the also use the predicted background mask
+
     3. ray_sampler/
         - Right-hand coordinates: x-axis points to right, y-axis points to down, z-axis points to inward
         - camera: cam2world
@@ -89,12 +92,19 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per
         - `directions` are not normalized
         - The shape `poses` could both be `(..., 4, 4)` or `(..., 3, 4)`
         - Supports custom `min/max_depth` & `image_width, image_height`, `xy_grid` from `image_width, image_height` leverages `functools.lru_cache`
+
+    4. feature_extractors/
+        - takes in keyword args from the extra args from the input of `pipeline`, and return keyword args. (currently only return `global_codes`)
+
 2. dataset/
-    the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function)
-    the range of images should be normalized to `[0, 1]` to compatible with the sigmoid activation.
-    define a `dataset_bundle: NamedTuple` in the `Dataset`; in `runner.apis` wraps the data accordingly.
+    - the shapes of gt_rgb & bg_rgb should both be `(B, H, W, 3)` (to be compatible with the chunkify function)
+    - the range of images should be normalized to `[0, 1]` to compatible with the sigmoid activation.
+    - define a `dataset_bundle: NamedTuple` in the `Dataset`; in `runner.apis` wraps the data accordingly.
+        - The keys of the arguments should be the same as those in `pipeline`, `feature_extractor`.
+        - Currently, `networks` only take in `global_codes`
+
 3. runner/
-    Multiprocess loading is on CPU.
+    - Multiprocess loading is on CPU.
 
 ### Strcture of nerf.pl
 
