@@ -2,6 +2,8 @@
 
 Yet another NeRF, with extensibility and scalability. Implemented in PyTorch.
 
+This project is still under rapid development, git commit history and API may be changed in the future.
+
 ## Installation
 
 Environment installation:
@@ -29,25 +31,33 @@ pytest .
 Download and extract the zip file to `data/`.
 <details>
     <summary>Dataset Links</summary>
+
 Dataset: <https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1>
 
-blender_files.zip: <https://drive.google.com/file/d/1RjwxZCUoPlUgEWIUiuCmMmG0AhuV8A2Q/view?usp=sharing>
+- blender_files.zip: <https://drive.google.com/file/d/1RjwxZCUoPlUgEWIUiuCmMmG0AhuV8A2Q/view?usp=sharing>
 
-nerf_example_data.zip: <https://drive.google.com/file/d/1xzockqgkO-H3RCGfkZvIZNjOnk3l7AcT/view?usp=sharing>
+- nerf_example_data.zip: <https://drive.google.com/file/d/1xzockqgkO-H3RCGfkZvIZNjOnk3l7AcT/view?usp=sharing>
 
-nerf_llff_data.zip: <https://drive.google.com/file/d/16VnMcF1KJYxN9QId6TClMsZRahHNMW5g/view?usp=sharing>
+- nerf_llff_data.zip: <https://drive.google.com/file/d/16VnMcF1KJYxN9QId6TClMsZRahHNMW5g/view?usp=sharing>
 
-nerf_real_360.zip: <https://drive.google.com/file/d/1jzggQ7IPaJJTKx9yLASWHrX8dXHnG5eB/view>
+- nerf_real_360.zip: <https://drive.google.com/file/d/1jzggQ7IPaJJTKx9yLASWHrX8dXHnG5eB/view>
 
-nerf_synthetic.zip: <https://drive.google.com/file/d/18JxhpWD-4ZmuFKLzKlAw-w5PpzZxXOcG/view?usp=sharing>
+- nerf_synthetic.zip: <https://drive.google.com/file/d/18JxhpWD-4ZmuFKLzKlAw-w5PpzZxXOcG/view?usp=sharing>
 
 </details>
 
 ## Usage
 
 ```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per-node=8 scripts/run.py --config $config [--output-dir $OUTPUT-DIR] [--checkpoint $CHECKPOINT-PATH] [--device $DEVICE ("cuda" or "cpu")] [--test-only] [--render-only] [--debug] {--cfg-options "xxx=yyy"}
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc-per-node=8 scripts/run.py --config $config [--output-dir $OUTPUT-DIR] [--checkpoint $CHECKPOINT-PATH] [--device $DEVICE ("cuda" or "cpu")] [--test-only] [--debug] {--cfg_options "xxx=yyy"}
 ```
+
+## Performance
+
+| Dataset | Config                            | PSNR (repoduce) | PSNR (paper) | Time (repoduce)     | Time (paper) |
+| ------- | --------------------------------- | --------------- | ------------ | ------------------- | ------------ |
+| Lego    | [lego.yml](configs/nerf/lego.yml) | 30.70           | 32.54        | ~2h (on 4 RTX3090)  | >12h         |
+| Fern    | N/A                               | N/A             | 25.17        | N/A                 | N/A          |
 
 ## The Code Structure
 
