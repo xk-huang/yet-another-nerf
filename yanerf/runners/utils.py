@@ -214,8 +214,20 @@ def concat_all_gather(tensor):
     return output
 
 
+def mse2psnr(mse, base=1.0):
+    return np.log10(max(1e-10, mse)) * (-10.0) + 20.0 * np.log10(base)
+
+
 def create_stats(preds, prefixes=["loss_", "objective"]):
-    return {k: v.mean().item() for k, v in preds.items() if any([k.startswith(prefix) for prefix in prefixes])}
+    stats = {}
+    for k, v in preds.items():
+        if any([k.startswith(prefix) for prefix in prefixes]):
+            stats[k] = v.mean().item()
+
+            if "mse" in k:
+                psnr_name = "psnr".join(k.split("mse"))
+                stats[psnr_name] = mse2psnr(stats[k])
+    return stats
 
 
 def pause_to_debug(config):

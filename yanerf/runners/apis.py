@@ -106,6 +106,9 @@ def eval_one_epoch(
     device: torch.device = torch.device("cuda"),
     save_image: bool = True,
 ):
+    if dataloader.drop_last is True:
+        raise ValueError("Imcomplete eval due to `drop_last`.")
+
     logger = _get_logger(config)
     print_per_iter = config.get("print_per_iter", 50)
     header = LOG_HEADER.format(run_type.value, epoch)
@@ -159,9 +162,6 @@ def eval_one_epoch(
                 "" if run_type == RunType.TEST else f"{epoch:05d}_",
             )
         timer.since_last_check()
-
-    if dataloader.drop_last is True:
-        raise ValueError("Imcomplete eval due to `drop_last`.")
 
     for k, v in metric_stats.items():
         metric_stats[k] = torch.mean(torch.concat(v, dim=0)[: len(dataloader.dataset)])

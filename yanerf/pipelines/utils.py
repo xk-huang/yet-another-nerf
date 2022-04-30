@@ -144,7 +144,6 @@ def _rgb_metrics(
     preds = {
         "rgb_huber": rgb_loss,
         "rgb_mse": rgb_squared,
-        "rgb_psnr": calc_psnr(images_pred, images),
     }
 
     return preds
