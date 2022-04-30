@@ -40,7 +40,7 @@ class MonitorMetricType(Enum):
     LOW = "low"
 
 
-def setup_output_dir(output_dir):
+def setup_output_dir_for_training(output_dir):
     output_dir = Path(output_dir)
 
     if output_dir.stem.startswith("version_"):
@@ -70,16 +70,18 @@ def main(args, config):
         config.runner.output_dir = args.output_dir
 
     output_dir = Path(config.runner.output_dir)
-    if output_dir.exists() and not args.test_only:
+    if not args.test_only:
         # Distributed data (directory) access, must wait for sync.
-        output_dir = setup_output_dir(output_dir)
+        output_dir = setup_output_dir_for_training(output_dir)
         config.runner.output_dir = str(output_dir)
 
     if is_main_process():
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "visualization").mkdir(parents=True, exist_ok=True)
-        (output_dir / "ckpts").mkdir(parents=True, exist_ok=True)
         config.dump(osp.join(output_dir, "config.yml"))
+
+        (output_dir / "visualization").mkdir(parents=True, exist_ok=True)
+        if not args.test_only:
+            (output_dir / "ckpts").mkdir(parents=True, exist_ok=True)
 
     # Logger
     log_level = logging.DEBUG if config.runner.get("debug", False) is True else logging.INFO
@@ -148,22 +150,23 @@ def main(args, config):
     optimizer = torch.optim.Adam(model.parameters(), lr=config.runner.init_lr, weight_decay=config.runner.weight_decay)
     scheduler = create_lr_scheduler(optimizer, config.runner)
 
-    # Model: Load Checkpoint
-    start_epoch = 0
-    if args.checkpoint:
-        logger.info("Load Checkpoint")
-        checkpoint = torch.load(args.checkpoint, map_location="cpu")
-        model.load_state_dict(checkpoint["model"])
-
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        start_epoch = checkpoint["epoch"] + 1
-        logger.info(f"Resume checkpoint from: {args.checkpoint}")
-
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
     else:
         model_without_ddp = model
+
+    # Model: Load Checkpoint
+    start_epoch = 0
+    if args.checkpoint:
+        logger.info("Load Checkpoint")
+        checkpoint = torch.load(args.checkpoint, map_location="cpu")
+
+        model_without_ddp.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        start_epoch = checkpoint["epoch"] + 1
+
+        logger.info(f"Resume checkpoint from: {args.checkpoint}")
 
     if args.debug:
         pause_to_debug(config)
@@ -183,6 +186,18 @@ def main(args, config):
             MONITOR_METRIC_NAME,
             MonitorMetricType.HIGH,
         )
+
+        # Finish training, try to load the best checkpoint
+        best_model_checkpoint = output_dir / "ckpts" / f"ckpts_{-1:04d}.pth"
+        if best_model_checkpoint.exists():
+            logger.info("Load best checkpoint")
+
+            checkpoint = torch.load(best_model_checkpoint, map_location="cpu")
+            model_without_ddp.load_state_dict(checkpoint["model"])
+
+            logger.info(f"Best checkpoint is found: {best_model_checkpoint}.")
+        else:
+            logger.info(f"Best checkpoint is not found. Use the model from the last epoch.")
 
     # Testing
     test(config.runner, dataloaders[2], device, model, logger)
@@ -343,7 +358,6 @@ def train(
 
                 current_metric = val_stats.get(monitor_metric_name, None)
                 try:
-                    current_metric = current_metric.item()
                     if compare_metric(best_metric, current_metric):
                         logger.info(f"Monitor Metric: from {best_metric} -> {current_metric}.")
                         best_metric = current_metric
@@ -365,7 +379,7 @@ def train(
 
     if is_main_process():
         total_time_str = str(datetime.timedelta(seconds=int(timer.since_last_check())))
-        logger.info(f"Testing time: {total_time_str}")
+        logger.info(f"Training time: {total_time_str}")
 
         save_model(runner_config.output_dir, optimizer, model_without_ddp, runner_config.num_epochs - 1)
 
@@ -376,7 +390,7 @@ def save_model(output_dir, optimizer, model_without_ddp, epoch):
         "optimizer": optimizer.state_dict(),
         "epoch": epoch,
     }
-    torch.save(save_obj, osp.join(output_dir, "ckpts", "ckpts_%04d.pth" % epoch))
+    torch.save(save_obj, osp.join(output_dir, "ckpts", f"ckpts_{epoch:04d}.pth"))
 
 
 if __name__ == "__main__":
