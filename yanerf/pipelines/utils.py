@@ -46,6 +46,7 @@ class ViewMetrics(torch.nn.Module):
         # masks_crop: Optional[torch.Tensor] = None,
         # grad_theta: Optional[torch.Tensor] = None,
         # density_grid: Optional[torch.Tensor] = None,
+        loss_reweight_masks: Optional[torch.Tensor] = None,
         keys_prefix: str = "loss_",
         # mask_renders_by_pred: bool = False,
     ):
@@ -118,14 +119,15 @@ class ViewMetrics(torch.nn.Module):
 
         images = _sample_grid(images)
         depths = _sample_grid(depths)
+        loss_reweight_masks = _sample_grid(loss_reweight_masks)
 
         preds = {}
         if images is not None and images_pred is not None:
-            preds.update(_rgb_metrics(images, images_pred))
+            preds.update(_rgb_metrics(images, images_pred, loss_reweight_masks))
 
         if depths is not None and depths_pred is not None:
             _, abs_ = eval_depth(depths_pred, depths, get_best_scale=True, mask=None, crop=0)
-            preds["depth_abs"] = abs_.mean()
+            preds["depth_abs"] = abs_.mean(dim=-1)
         if keys_prefix is not None:
             preds = {(keys_prefix + k): v for k, v in preds.items()}
 
@@ -135,11 +137,18 @@ class ViewMetrics(torch.nn.Module):
 def _rgb_metrics(
     images: torch.Tensor,
     images_pred: torch.Tensor,
+    loss_reweight_masks: Optional[torch.Tensor] = None,
 ):
-    batch_size = images.shape[0]
+    batch_size, *rest_dims = images.shape
     images = images.view(batch_size, -1)
     images_pred = images_pred.view(batch_size, -1)
-    rgb_squared = ((images_pred - images) ** 2).mean(dim=-1)
+
+    differences = (images_pred - images) ** 2
+    if loss_reweight_masks is not None:
+        loss_reweight_masks = loss_reweight_masks.reshape(batch_size, *rest_dims).view(batch_size, -1)
+        differences = differences * loss_reweight_masks
+
+    rgb_squared = differences.mean(dim=-1)
     rgb_loss = huber(rgb_squared, scaling=0.03)
     preds = {
         "rgb_huber": rgb_loss,
@@ -261,7 +270,19 @@ def estimate_depth_scale_factor(pred, gt, mask, clamp_thr):
 
 
 def sample_grid(tensor: torch.Tensor, image_sampling_grid: torch.Tensor) -> torch.Tensor:
+    """_summary_
+
+    Args:
+        tensor (torch.Tenosr): (B, H, W, C)
+        image_sampling_grid (torch.Tensor): (B, H_out, W_out, 2)
+
+    Returns:
+        torch.Tensor: B, H_out, W_out, C
+    """
     batch_size, *tensor_spatial_shape, last_dim = tensor.shape
+    assert image_sampling_grid[..., 0].max() < tensor_spatial_shape[-1], "Invalid ray_sampler.image_width"
+    assert image_sampling_grid[..., 1].max() < tensor_spatial_shape[0], "Invalid ray_sampler.image_height"
+
     _, *grid_spatial_shape, _ = image_sampling_grid.shape
     flat_tensor = tensor.view(batch_size, -1, last_dim)
     flat_image_sampling_grid = image_sampling_grid.view(batch_size, -1, 2)
@@ -285,7 +306,7 @@ def scatter_rays_to_image(
 ):
     batch_size, *tensor_spatial_shape, last_dim = tensor.shape
     _, *grid_spatial_shape, _ = image_sampling_grid.shape
-    assert tensor_spatial_shape == grid_spatial_shape
+    assert tensor_spatial_shape == grid_spatial_shape, f"{tensor_spatial_shape} vs. {grid_spatial_shape}"
 
     flat_tensor = tensor.view(batch_size, -1, last_dim)
     flat_image_sampling_grid = image_sampling_grid.view(batch_size, -1, 2)

@@ -22,10 +22,10 @@ class BlenderDatasetWrapper(NamedTuple):
 
 
 @DATASETS.register_module()
-class BlenderDataset(Dataset):
+class LLFFDataset(Dataset):
     data_wrapper: Callable = BlenderDatasetWrapper
 
-    def __init__(self, base_dir, split, scale_down=1, test_skip=8, debug=False):
+    def __init__(self, base_dir, split, scale_down=1, debug=False):
         if split not in ["train", "val", "test"]:
             raise ValueError(f"Invalid split: {split}.")
 
@@ -34,9 +34,6 @@ class BlenderDataset(Dataset):
         with open(self.base_dir / f"transforms_{split}.json", "r") as fp:
             meta = json.load(fp)
         self.frames = meta["frames"]
-        if split in ["val", "test"]:
-            logger.info(f"test_skip = {test_skip}")
-            self.frames = self.frames[::test_skip]
         camera_angle_x = float(meta["camera_angle_x"])
 
         img_path = self.base_dir / f"{self.frames[0]['file_path']}.png"

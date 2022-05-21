@@ -10,6 +10,8 @@ datasets:
     split: "test"
 
 runner:
+  eval_last_epoch_model: true
+  seed: 42
   output_dir: results/nerf/lego
   debug: False
   print_per_iter: 100
@@ -27,17 +29,18 @@ runner:
    # 0.99..99: num_decimal_epoch * num_decimal_rate = 1, rate ** num_epoch ~= 0.36
    # 0.99..95: num_decimal_epoch * num_decimal_rate = 0.1, rate ** num_epoch ~= 0.60
   lr_decay_rate: 0.1
-  lr_decay_iter_interval: 250000
-  num_iters: 200000
+  lr_decay_iters: 250000
   batch_size_list:
     - 1
     - 1
     - 1
   num_workers_list:
-    - 16
-    - 16
-    - 16
-
+    - 4
+    - 4
+    - 4
+  num_iters: 200000
+  hooks: []
+  lr_param_groups: []
 
 pipeline:
   type: NeRFPipeline
@@ -62,12 +65,13 @@ pipeline:
     n_hidden_neurons_dir: 128
     n_hidden_neurons_xyz: 256
     n_layers: 8
+    nerf_paper_v1: false
   ray_sampler:
     type: RaySampler
     image_height: 800
     image_width: 800
-    max_depth: 6.0
     min_depth: 2.0
+    max_depth: 6.0
     n_pts_per_ray_evaluation: 64
     n_pts_per_ray_training: 64
     n_rays_per_image_sampled_from_mask: 4096
@@ -85,5 +89,6 @@ pipeline:
     density_noise_std_train: 0.2
     n_pts_per_ray_fine_evaluation: 128
     n_pts_per_ray_fine_training: 128
-  feature_extractor:
-    type: IdentityMapper
+    hard_background: false
+    background_density_bias: 1.0e-6
+  feature_extractor: []

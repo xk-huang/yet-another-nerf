@@ -23,6 +23,8 @@ class MultipassEmissionAbsorpsionRenderer(torch.nn.Module):
         weight_function: str = "product",  # product | minimum
         background_opacity: float = 1e10,
         blend_output: bool = False,
+        background_density_bias: float = 0.0,
+        hard_background: bool = False,
     ) -> None:
         super().__init__()
         self.density_noise_std_train = density_noise_std_train
@@ -46,6 +48,8 @@ class MultipassEmissionAbsorpsionRenderer(torch.nn.Module):
             weight_function=weight_function,
             background_opacity=background_opacity,
             blend_output=blend_output,
+            hard_background=hard_background,
+            background_density_bias=background_density_bias,
         )
 
     def forward(
@@ -93,12 +97,14 @@ class MultipassEmissionAbsorpsionRenderer(torch.nn.Module):
         density_noise_std = self.density_noise_std_train if evaluation_mode == EvaluationMode.TRAINING else 0.0
 
         features, depths, alpha_masks, weights, aux = self._raymarcher(
-            *implicit_functions[0](origins, directions, lengths, **kwargs),
+            **implicit_functions[0](origins, directions, lengths, **kwargs),
             ray_lengths=lengths,
             ray_directions=directions,
             density_noise_std=density_noise_std,
             bg_color=bg_color,
         )
+        aux["weights"] = weights
+
         output = RendererOutput(
             features=features, depths=depths, alpha_masks=alpha_masks, aux=aux, prev_stage=prev_stage
         )
@@ -121,16 +127,19 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
         background_opacity: float = 1e10,
         density_relu: bool = True,
         blend_output: bool = True,
+        background_density_bias: float = 0.0,
+        hard_background: bool = False,
     ) -> None:
         super().__init__()
         self.surface_thickness = surface_thickness
         self.density_relu = density_relu
         self.background_opacity = background_opacity
         self.blend_output = blend_output
+        self.background_density_bias = background_density_bias
         if not isinstance(bg_color, torch.Tensor):
             bg_color = torch.tensor(bg_color)
-
         self.register_buffer("_bg_color", bg_color, persistent=False)
+        self.hard_background = hard_background
 
         self._capping_function: Callable[[torch.Tensor], torch.Tensor] = {
             "exponential": lambda x: 1.0 - torch.exp(-x),
@@ -195,7 +204,7 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
         if density_noise_std > 0.0:
             rays_densities = rays_densities + torch.randn_like(rays_densities) * density_noise_std
         if self.density_relu:
-            rays_densities = torch.relu(rays_densities)
+            rays_densities = torch.relu(rays_densities) + self.background_density_bias
 
         weighted_densities = deltas * rays_densities
         capped_densities = self._capping_function(weighted_densities)
@@ -206,21 +215,27 @@ class EmissionAbsorptionRaymarcher(torch.nn.Module):
         absorption_shifted[..., : self.surface_thickness] = 1.0
 
         weights = self._weight_function(capped_densities, absorption_shifted)
-        features: torch.Tensor = (weights[..., None] * rays_features).sum(dim=-2)
         depths = (weights * ray_lengths)[..., None].sum(dim=-2)
 
-        alpha: Union[int, torch.Tensor] = opacities if self.blend_output else 1
-        _bg_color: torch.Tensor
         if bg_color is None:
-            _bg_color = self._bg_color  # type: ignore[assignment]
+            bg_color = self._bg_color  # type: ignore[assignment]
+            bg_color = bg_color.view(*([1] * len(rays_features.shape[:-2])), -1).expand(*rays_features.shape[:-2], -1)
         else:
-            _bg_color = bg_color
-        if _bg_color.shape[-1] not in [1, features.shape[-1]]:
-            raise ValueError(
-                f"Wrong number of background color channels: _bg_color {_bg_color.shape} vs. features {features.shape}."
-            )
+            bg_color = bg_color
 
-        features = alpha * features + (1 - alpha) * _bg_color
+        if not self.hard_background:
+            features: torch.Tensor = (weights[..., None] * rays_features).sum(dim=-2)
+            alpha: Union[int, torch.Tensor] = opacities if self.blend_output else 1
+            bg_color: torch.Tensor
+            if bg_color.shape[-1] not in [1, features.shape[-1]]:
+                raise ValueError(
+                    f"Wrong number of background color channels: _bg_color {bg_color.shape} vs. features {features.shape}."
+                )
+            features = alpha * features + (1 - opacities) * bg_color
+        else:
+            rays_features = torch.cat([rays_features[..., :-1, :], bg_color[..., None, :]], dim=-2)
+            features: torch.Tensor = (weights[..., None] * rays_features).sum(dim=-2)
+
         return features, depths, opacities, weights, aux
 
 

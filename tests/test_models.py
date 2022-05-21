@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from yanerf.pipelines.models import MODELS
-from yanerf.pipelines.models.nerf_mlp import ModelOutputs
 from yanerf.utils.config import Config
 
 cfg_paths = [
@@ -44,13 +43,13 @@ def test_NeRFMLP(cfg_path):
         global_codes=global_codes,
     )
 
-    outs: ModelOutputs = model(**data)
-    print(outs._fields)
-    print([i.shape for i in outs if isinstance(i, torch.Tensor)])
+    outs = model(**data)
+    print(outs.keys())
+    print([i.shape for _, i in outs.items() if isinstance(i, torch.Tensor)])
 
     check_pair = (
-        (list(outs[0].shape), [B, *spatial, num_pts_per_ray_dim, 1]),
-        (list(outs[1].shape), [B, *spatial, num_pts_per_ray_dim, color_dim]),
+        (list(outs[list(outs.keys())[0]].shape), [B, *spatial, num_pts_per_ray_dim, 1]),
+        (list(outs[list(outs.keys())[1]].shape), [B, *spatial, num_pts_per_ray_dim, color_dim]),
     )
     for a, b in check_pair:
         assert a == b

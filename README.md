@@ -28,6 +28,13 @@ Run tests:
 pytest .
 ```
 
+Dev:
+
+```shell
+pip install bandit==1.7.4 black==22.3.0 flake8-docstrings==1.6.0 flake8==3.9.1 flynt==0.64 isort==5.8.0 mypy==0.902 pre-commit==2.13.0 pytest ipython
+pre-commit install
+```
+
 ## Data Preparation
 
 Download and extract the zip file to `data/`.

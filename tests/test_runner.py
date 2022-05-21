@@ -10,7 +10,7 @@ import torch
 
 from yanerf.pipelines.builder import PIPELINES
 from yanerf.runners.apis import eval_one_epoch, train_one_epoch
-from yanerf.runners.utils import RunType, create_loader, create_lr_scheduler
+from yanerf.runners.utils import RunType, create_loader, create_lr_scheduler, create_param_groups
 from yanerf.utils.config import Config
 from yanerf.utils.logging import get_logger
 
@@ -80,7 +80,7 @@ def test_runner_simple(use_cuda=False):
 
     runner_cfg.runner.num_epochs = ceil(runner_cfg.runner.num_iters / len(dataloader))
 
-    optimizer = torch.optim.Adam(pipeline.parameters(), lr=runner_cfg.runner.init_lr)
+    optimizer = torch.optim.Adam(create_param_groups(pipeline, runner_cfg.runner, logger), lr=runner_cfg.runner.init_lr)
     scheduler = create_lr_scheduler(optimizer, runner_cfg.runner)
     if use_cuda:
         pipeline = pipeline.cuda()
