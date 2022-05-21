@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader, DistributedSampler
 
 from yanerf.pipelines.utils import EvaluationMode
@@ -11,6 +12,7 @@ from yanerf.utils.config import ConfigDict
 from yanerf.utils.logging import get_logger
 from yanerf.utils.timer import Timer
 
+from .hooks import EvalDataHook, EvalOutputsHook, TrainDataHook, TrainOutputsHook
 from .utils import (
     RunType,
     concat_all_gather,
@@ -50,12 +52,20 @@ def train_one_epoch(
     data: Tuple[torch.Tensor, ...]
     for i, data in enumerate(dataloader):
         _times = {}
-        data = tuple(_data.to(device, non_blocking=True) for _data in data)
+        data = dataloader.dataset.data_wrapper(
+            *((_data.to(device, non_blocking=True) if isinstance(_data, torch.Tensor) else _data) for _data in data)
+        )._asdict()
+
+        # Run DataHook
+        if hasattr(config, "hooks"):
+            for hook in config.hooks:
+                if isinstance(hook, TrainDataHook):
+                    data = hook(data=data, iter=passed_iter, epoch=epoch, config=config)
         _times["data"] = timer.since_last_check()
 
         scheduler(iter=passed_iter)
         if config["warmup_steps"] > 0 and passed_iter <= config["warmup_steps"]:
-            warmup_lr_scheduler(optimizer, passed_iter, config["warmup_steps"], config["warmup_lr"], config["init_lr"])
+            warmup_lr_scheduler(optimizer, passed_iter, config["warmup_steps"], config["warmup_lr"])
 
         optimizer.zero_grad()
 
@@ -63,10 +73,14 @@ def train_one_epoch(
         preds = inference(
             model=model,
             data=data,
-            data_wrapper=dataloader.dataset.data_wrapper,
             evaluation_mode=EvaluationMode.TRAINING,
             compute_metrics=True,
         )
+        # Run OutputsHook
+        if hasattr(config, "hooks"):
+            for hook in config.hooks:
+                if isinstance(hook, TrainOutputsHook):
+                    preds = hook(outputs=preds, config=config, iter=passed_iter, epoch=epoch)
         _times["inference"] = timer.since_last_check()
 
         try:
@@ -78,9 +92,8 @@ def train_one_epoch(
 
         batch_size = dataloader.batch_size if dataloader.batch_size is not None else 0
         if passed_iter % print_per_iter == 0:
-            lr_string = ",".join([f"{param_group['lr']:3e}" for param_group in optimizer.param_groups])
-            num_params = len(tuple(model.parameters()))
-            logger.info(f"{header}\tlr: {lr_string}\tnum_params: {num_params}.")
+            lr_string = ", ".join([f"{param_group['lr']:3e}" for param_group in optimizer.param_groups])
+            logger.info(f"{header}\tlr: {lr_string}.")
 
             stats = create_stats(preds)
             log_string = "\t".join(
@@ -89,6 +102,17 @@ def train_one_epoch(
                 + [f"{k}: {v:.3f}" for k, v in stats.items()]
             )
             logger.info(f"{header}: {log_string}")
+
+        if passed_iter % config.val_per_iter == 0:
+            logger.info(f"save training image to check sanity.")
+            vis_batch_img(
+                preds,
+                run_type,
+                config.output_dir,
+                0,
+                dataloader.batch_size,
+                f"{epoch:05d}/",
+            )
 
         passed_iter += 1
         timer.since_last_check()
@@ -121,17 +145,29 @@ def eval_one_epoch(
     metric_stats: defaultdict[str, Union[List, torch.Tensor]] = defaultdict(list)
     for i, data in enumerate(dataloader):
         _times = {}
-        data = tuple(_data.to(device, non_blocking=True) for _data in data)
+        data = dataloader.dataset.data_wrapper(
+            *((_data.to(device, non_blocking=True) if isinstance(_data, torch.Tensor) else _data) for _data in data)
+        )._asdict()
+
+        # Run DataHook
+        if hasattr(config, "hooks"):
+            for hook in config.hooks:
+                if isinstance(hook, EvalDataHook):
+                    data = hook(data=data, config=config, iter=i, epoch=epoch)
         _times["data"] = timer.since_last_check()
 
         timer.since_last_check()
         preds = inference(
             model=model,
             data=data,
-            data_wrapper=dataloader.dataset.data_wrapper,
             evaluation_mode=EvaluationMode.EVALUATION,
             compute_metrics=True,
         )
+        # Run OutputsHook
+        if hasattr(config, "hooks"):
+            for hook in config.hooks:
+                if isinstance(hook, EvalOutputsHook):
+                    preds = hook(outputs=preds, config=config, iter=i, epoch=epoch)
         _times["inference"] = timer.since_last_check()
 
         for k, v in preds.items():
@@ -159,7 +195,7 @@ def eval_one_epoch(
                 config.output_dir,
                 start_idx,
                 end_idx,
-                "" if run_type == RunType.TEST else f"{epoch:05d}_",
+                "" if run_type == RunType.TEST else f"{epoch:05d}/",
             )
         timer.since_last_check()
 
@@ -184,19 +220,17 @@ def _get_logger(config):
 
 def inference(
     model: torch.nn.Module,
-    data: Tuple,
-    data_wrapper: Callable,
+    data: DictConfig,
     evaluation_mode: EvaluationMode = EvaluationMode.EVALUATION,
     compute_metrics: bool = True,
 ):
-    _data = data_wrapper(*data)._asdict()
-    if compute_metrics is False and _data.get("image_rgb", None) is not None:
-        _data.pop("image_rgb")
+    if compute_metrics is False and data.get("image_rgb", None) is not None:
+        data.pop("image_rgb")
 
     preds: Dict = model(
-        **_data,
+        **data,
         evaluation_mode=evaluation_mode,
     )
-    preds.update(_data)
+    preds.update(data)
 
     return preds

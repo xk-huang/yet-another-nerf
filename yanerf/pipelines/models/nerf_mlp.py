@@ -1,4 +1,4 @@
-from typing import Any, List, NamedTuple, Optional
+from typing import Any, Callable, List, NamedTuple, Optional
 
 import torch
 
@@ -6,13 +6,7 @@ from yanerf.pipelines.models.utils import HarmonicEmbedding
 from yanerf.utils.logging import get_logger
 
 from .builder import MODELS
-from .utils import LinearWithRepeat, create_embeddings_for_implicit_function, ray_bundle_to_ray_points
-
-
-class ModelOutputs(NamedTuple):
-    raw_densities: torch.Tensor
-    rays_colors: torch.Tensor
-    aux: Any
+from .utils import LinearWithRepeat, ray_bundle_to_ray_points
 
 
 @MODELS.register_module()
@@ -32,6 +26,7 @@ class NeRFMLP(torch.nn.Module):
         input_dir: bool = True,
         # xyz_ray_dir_in_camera_coords: bool = False,
         color_dim: int = 3,
+        nerf_paper_v1=False,
     ) -> None:
         super().__init__()
         self.logger = get_logger(__name__)
@@ -79,6 +74,10 @@ class NeRFMLP(torch.nn.Module):
             if input_dir
             else torch.nn.Linear(self.n_hidden_neurons_xyz, self.n_hidden_neurons_dir),
             torch.nn.ReLU(True),
+            *(
+                [torch.nn.Linear(self.n_hidden_neurons_dir, self.n_hidden_neurons_dir), torch.nn.ReLU(True)]
+                * ((n_layers // 4) if nerf_paper_v1 else 0)
+            ),
             torch.nn.Linear(self.n_hidden_neurons_dir, self.color_dim),
             torch.nn.Sigmoid(),
         )
@@ -127,7 +126,7 @@ class NeRFMLP(torch.nn.Module):
         # camera: Optional[CamerasBase] = None,
         global_codes: Optional[torch.Tensor] = None,
         **kwargs,
-    ) -> ModelOutputs:
+    ) -> dict:
         """
         The forward function accepts the parametrizations of
         3D points sampled along projection rays. The forward
@@ -158,7 +157,8 @@ class NeRFMLP(torch.nn.Module):
         """
         # rays_points_world.shape = [minibatch x ... x pts_per_ray x 3]
         rays_points_world = ray_bundle_to_ray_points(origins, directions, lengths)
-
+        if global_codes is not None:
+            global_codes = global_codes.view(global_codes.shape[0], -1)
         # [TODO] Check the input range
         if not self._check_input(global_codes):
             raise ValueError("The shape of global codes is imcompible with the input dim of the network.")
@@ -174,7 +174,7 @@ class NeRFMLP(torch.nn.Module):
 
         rays_colors = self._get_colors(features, directions)
 
-        return ModelOutputs(raw_densities, rays_colors, {})
+        return dict(rays_densities=raw_densities, rays_features=rays_colors, aux={})
 
     def _check_input(self, global_codes):
         if global_codes is None:
@@ -294,3 +294,42 @@ def _xavier_init(linear) -> None:
     Performs the Xavier weight initialization of the linear layer `linear`.
     """
     torch.nn.init.xavier_uniform_(linear.weight.data)
+
+
+def create_embeddings_for_implicit_function(
+    xyz_world: torch.Tensor,
+    # xyz_in_camera_coords: bool,
+    global_codes: Optional[torch.Tensor],
+    # camera: Optional[CamerasBase],
+    # fun_viewpool: Optional[Callable],
+    xyz_embedding_function: Optional[Callable],
+) -> torch.Tensor:
+    bs, *spatial_size, pts_per_ray, _ = xyz_world.shape
+
+    ray_points_for_embed = xyz_world
+    if xyz_embedding_function is None:
+        embeds = torch.empty(
+            *(bs, 1, *spatial_size, pts_per_ray, 0),
+            dtype=xyz_world.dtype,
+            device=xyz_world.device,
+        )
+    else:
+        embeds = xyz_embedding_function(ray_points_for_embed)
+
+    if global_codes is not None:
+        embeds = broadcast_global_code(embeds, global_codes)
+    return embeds
+
+
+def broadcast_global_code(embeds: torch.Tensor, global_codes: torch.Tensor):
+    """
+    Expands the `global_code` of shape (minibatch, dim)
+    so that it can be appended to `embeds` of shape (minibatch, ..., dim2),
+    and appends to the last dimension of `embeds`.
+    """
+    bs = embeds.shape[0]
+    global_code_broadcast = global_codes.view(bs, *([1] * (embeds.ndim - 2)), -1).expand(
+        *embeds.shape[:-1],
+        global_codes.shape[-1],
+    )
+    return torch.cat([embeds, global_code_broadcast], dim=-1)

@@ -7,19 +7,22 @@ import random
 from enum import Enum
 from math import ceil, floor
 from pathlib import Path
+from typing import Dict, Sequence
 
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch.utils.data import Subset
+from torch.utils.data import DataLoader, Subset
 
 from yanerf.dataset.builder import DATASETS
 from yanerf.pipelines.builder import PIPELINES
 from yanerf.runners.apis import eval_one_epoch, train_one_epoch
 from yanerf.runners.utils import (
     RunType,
+    collate_only_array,
     create_loader,
     create_lr_scheduler,
+    create_param_groups,
     create_sampler,
     get_rank,
     get_world_size,
@@ -59,7 +62,12 @@ def main(args, config):
     rank = get_rank()
     world_size = get_world_size()
 
-    seed = args.seed + rank
+    if not hasattr(config.runner, "seed"):
+        config.runner.seed = 42
+    if args.seed is not None:
+        config.runner.seed = args.seed
+
+    seed = config.runner.seed + rank
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -119,7 +127,7 @@ def main(args, config):
             batch_size=batch_size,
             num_workers=num_workers,
             is_train=True if dataset_cfg.split == "train" else False,
-            collate_fn=None,
+            collate_fn=collate_only_array,
             pin_memory=True,
         )
         for dataset, sampler, batch_size, num_workers, dataset_cfg in zip(
@@ -133,7 +141,7 @@ def main(args, config):
             raise ValueError(f"The dataloader No.{i} is empty at rank {rank}")
 
     # Change iter-based runner to epoch-based runner according to the dataloaders
-    setup_iter_based_runner(config, dataloaders[0], logger)
+    setup_iter_based_runner(config.runner, dataloaders[0], logger)
 
     # Model
     logger.info("Prepare Model")
@@ -147,11 +155,12 @@ def main(args, config):
         config.runner.init_lr = config.runner.init_lr * world_size
         config.runner.min_lr = config.runner.min_lr * world_size
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.runner.init_lr, weight_decay=config.runner.weight_decay)
+    param_groups = create_param_groups(model, config.runner, logger)
+    optimizer = torch.optim.Adam(param_groups, lr=config.runner.init_lr, weight_decay=config.runner.weight_decay)
     scheduler = create_lr_scheduler(optimizer, config.runner)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
     else:
         model_without_ddp = model
@@ -171,6 +180,23 @@ def main(args, config):
     if args.debug:
         pause_to_debug(config)
 
+    # Create Hooks
+    def create_hooks(runner_config):
+
+        from yanerf.runners.hooks import HOOKS
+
+        if not hasattr(runner_config, "hooks"):
+            hooks = []
+        elif isinstance(runner_config.hooks, Dict):
+            hooks = [HOOKS.build(runner_config.hooks)]
+        elif isinstance(runner_config.hooks, Sequence):
+            hooks = [HOOKS.build(hook) for hook in config.runner.hooks]
+
+        logger.info(f"Hooks: {[type(hook).__name__ for hook in hooks]}")
+        return hooks
+
+    config.runner.hooks = create_hooks(config.runner)
+
     # Training
     if not args.test_only:
         train(
@@ -188,17 +214,19 @@ def main(args, config):
         )
 
         # Finish training, try to load the best checkpoint
-        best_model_checkpoint = output_dir / "ckpts" / f"ckpts_{-1:04d}.pth"
-        if best_model_checkpoint.exists():
-            logger.info("Load best checkpoint")
+        if config.runner.eval_last_epoch_model is False:
+            best_model_checkpoint = output_dir / "ckpts" / f"ckpts_{-1:04d}.pth"
+            if best_model_checkpoint.exists():
+                logger.info("Load best checkpoint")
 
-            checkpoint = torch.load(best_model_checkpoint, map_location="cpu")
-            model_without_ddp.load_state_dict(checkpoint["model"])
+                checkpoint = torch.load(best_model_checkpoint, map_location="cpu")
+                model_without_ddp.load_state_dict(checkpoint["model"])
 
-            logger.info(f"Best checkpoint is found: {best_model_checkpoint}.")
+                logger.info(f"Best checkpoint is found: {best_model_checkpoint}.")
+            else:
+                logger.info(f"Best checkpoint is not found. Use the model from the last epoch.")
         else:
-            logger.info(f"Best checkpoint is not found. Use the model from the last epoch.")
-
+            logger.info("eval last epoch model")
     # Testing
     test(config.runner, dataloaders[2], device, model, logger)
 
@@ -212,20 +240,15 @@ def get_version(path: Path):
     return len(list(versions))
 
 
-def setup_iter_based_runner(config, dataloader, logger):
+def setup_iter_based_runner(runner_config, dataloader: DataLoader, logger):
     iters_per_epoch = len(dataloader) * get_world_size() * dataloader.batch_size
 
-    config.runner.num_iters_on_one_gpu = config.runner.num_iters
-    config.runner.num_epochs = ceil(config.runner.num_iters / iters_per_epoch)
-    config.runner.num_iters = config.runner.num_epochs * len(dataloader)
+    runner_config.num_iters_on_one_gpu = runner_config.num_iters
+    runner_config.num_epochs = ceil(runner_config.num_iters / iters_per_epoch)
+    runner_config.num_iters = runner_config.num_epochs * len(dataloader)
 
-    config.runner.lr_decay_iter_interval_on_one_gpu = config.runner.lr_decay_iter_interval
-    config.runner.lr_decay_iter_interval = config.runner.lr_decay_iter_interval * (
-        config.runner.num_iters / config.runner.num_iters_on_one_gpu
-    )
-
-    config.runner.val_per_epoch = max(1, floor(config.runner.val_per_iter / iters_per_epoch))
-    config.runner.save_per_epoch = max(1, floor(config.runner.save_per_iter / iters_per_epoch))
+    runner_config.val_per_epoch = max(1, floor(runner_config.val_per_iter / iters_per_epoch))
+    runner_config.save_per_epoch = max(1, floor(runner_config.save_per_iter / iters_per_epoch))
 
     logger.info("Modify iter-based runner to epoch-based runner according to the dataloaders.")
     logger.info("After modification:")
@@ -234,11 +257,16 @@ def setup_iter_based_runner(config, dataloader, logger):
         ("val_per_iter", "val_per_epoch"),
         ("save_per_iter", "save_per_epoch"),
         ("num_iters_on_one_gpu", "num_iters"),
-        ("lr_decay_iter_interval_on_one_gpu", "lr_decay_iter_interval"),
     )
     for (old_k, new_k) in _pair_keys:
-        logger.info(f"{old_k}: {getattr(config.runner, old_k)} -> {new_k}: {getattr(config.runner, new_k)}")
-    logger.info(f"num_epochs: {config.runner.num_epochs}")
+        logger.info(f"\t{old_k}: {getattr(runner_config, old_k)} -> {new_k}: {getattr(runner_config, new_k)}")
+    logger.info(f"\tnum_epochs: null -> {runner_config.num_epochs}")
+
+    for key in runner_config.keys():
+        if key != "num_iters" and "iters" in key:
+            x_iters = runner_config[key]
+            runner_config[key] = ceil(x_iters * (runner_config.num_iters / runner_config.num_iters_on_one_gpu))
+            logger.info(f"\t{key}: {x_iters} -> {runner_config[key]}")
 
     return None
 
@@ -258,6 +286,7 @@ def setup_debug_env(runner_config, datasets, logger):
     runner_config.print_per_iter = 1
     runner_config.save_per_iter = 1
     runner_config.val_per_iter = 1
+    runner_config.num_workers_list = [0 for _ in runner_config.num_workers_list]
 
 
 def test(runner_config, dataloader, device, model, logger):
@@ -407,7 +436,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--test_only", action="store_true")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--seed", default=None, type=int)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
         "--cfg_options",

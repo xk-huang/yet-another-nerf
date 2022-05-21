@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 
@@ -70,10 +70,12 @@ class RaySampler(torch.nn.Module):
         evaluation_mode: EvaluationMode,
         *,
         mask: Optional[torch.Tensor] = None,
+        sampling_prob_mask: Optional[torch.Tensor] = None,
         image_height: Optional[int] = None,
         image_width: Optional[int] = None,
         min_depth: Optional[float] = None,
         max_depth: Optional[float] = None,
+        n_rays_per_image: Union[None, int, List[int]] = None,
     ) -> RayBundle:
         sample_mask = None
 
@@ -102,8 +104,10 @@ class RaySampler(torch.nn.Module):
             poses,
             focal_lengths,
             mask=sample_mask,
+            sampling_prob_mask=sampling_prob_mask,
             min_depth=min_depth,
             max_depth=max_depth,
+            n_rays_per_image=n_rays_per_image,
             image_height=image_height,
             image_width=image_width,
         )
@@ -150,9 +154,10 @@ class _RaySampler(torch.nn.Module):
         image_height: Optional[int] = None,
         image_width: Optional[int] = None,
         mask: Optional[torch.Tensor] = None,
+        sampling_prob_mask: Optional[torch.Tensor] = None,
         min_depth: Optional[float] = None,
         max_depth: Optional[float] = None,
-        n_rays_per_image: Optional[int] = None,
+        n_rays_per_image: Union[None, int, List[int]] = None,
         n_pts_per_ray: Optional[int] = None,
         stratified_sampling: Optional[bool] = None,
     ) -> RayBundle:
@@ -174,13 +179,52 @@ class _RaySampler(torch.nn.Module):
             num_rays = num_rays or mask.sum(dim=(1, 2)).min().int().item()  # type: ignore[assignment]
 
         if num_rays is not None:
+            # use hard mask
             if mask is not None:
                 assert mask.shape == xy_grid.shape[:3]
                 weights = mask.reshape(batch_size, -1)
             else:
                 _, width, height, _ = xy_grid.shape
                 weights = xy_grid.new_ones(batch_size, width * height)
-            rays_idx = _safe_multinomial(weights, num_rays)[..., None].expand(-1, -1, 2)
+
+            # use sampling prob
+            if sampling_prob_mask is not None:
+                # `xy_grid`: (B, H, W)
+                if sampling_prob_mask.shape == xy_grid.shape[:3]:
+                    sampling_prob_mask = sampling_prob_mask.reshape(batch_size, -1)  # (B, Num_pixels)
+                    weights = weights * sampling_prob_mask
+                elif len(sampling_prob_mask.shape) == 4:
+                    if isinstance(num_rays, int):
+                        num_rays = [num_rays]
+
+                    if sampling_prob_mask[:, 0].shape != xy_grid.shape[:3]:
+                        raise ValueError(
+                            f"Invalid `sampling_prob_mask`: `sampling_prob_mask.shape` {sampling_prob_mask.shape}, must align with {xy_grid.shape}"
+                        )
+                    if sampling_prob_mask.shape[1] != len(num_rays):
+                        raise ValueError(
+                            f"Invalid number of sampling layers: sampling_prob_mask.shape[1] {sampling_prob_mask.shape[1]} vs. len(num_rays) {len(num_rays)}"
+                        )
+
+                    num_layers = len(num_rays)
+                    weights = weights.unsqueeze(1).expand(-1, num_layers, -1)
+                    sampling_prob_mask = sampling_prob_mask.reshape(batch_size, num_layers, -1)
+                    weights = weights * sampling_prob_mask
+                else:
+                    raise ValueError(
+                        f"Invalida `sampling_prob_mask`, shape of {sampling_prob_mask.shape}, want (B, H, W) or (B, L, H, W)"
+                    )
+
+            # sampling pixel index
+            if len(weights.shape) == 2:
+                rays_idx = _safe_multinomial(weights, num_rays)
+            elif len(weights.shape) == 3:
+                rays_idx = torch.cat(
+                    [_safe_multinomial(weights[:, layer], num_rays[layer]) for layer in range(len(num_rays))], dim=-1
+                )
+            else:
+                raise ValueError(f"Invalid sampling weights shape: {weights.shape}")
+            rays_idx = rays_idx[..., None].expand(-1, -1, 2)
 
             xy_grid = torch.gather(xy_grid.reshape(batch_size, -1, 2), 1, rays_idx)[:, :, None]
 
@@ -198,7 +242,6 @@ class _RaySampler(torch.nn.Module):
             min_depth,
             max_depth,
             n_pts_per_ray,
-            self._unit_directions,
             stratified_sampling,
         )
 
@@ -212,7 +255,6 @@ def _xy_to_ray_bundle(
     min_depth: float,
     max_depth: float,
     n_pts_per_ray: int,
-    unit_directions: bool,
     stratified_sampling: bool = False,
 ) -> RayBundle:
     """_summary_
@@ -235,6 +277,11 @@ def _xy_to_ray_bundle(
 
     rays_zs = xy_grid.new_empty((0,))
     if n_pts_per_ray > 0:
+        if isinstance(min_depth, torch.Tensor):
+            min_depth = min_depth.mean().item()
+        if isinstance(max_depth, torch.Tensor):
+            max_depth = max_depth.mean().item()
+
         depths = torch.linspace(
             min_depth,
             max_depth,

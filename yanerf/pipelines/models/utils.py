@@ -5,11 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Callable, Optional, Tuple, NamedTuple
+from typing import Callable, NamedTuple, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 from torch.nn import Parameter, init
+
 from yanerf.pipelines.utils import RayBundle
 
 
@@ -242,42 +243,3 @@ def ray_bundle_to_ray_points(
     """
     rays_points = rays_origins[..., None, :] + rays_lengths[..., :, None] * rays_directions[..., None, :]
     return rays_points
-
-
-def create_embeddings_for_implicit_function(
-    xyz_world: torch.Tensor,
-    # xyz_in_camera_coords: bool,
-    global_codes: Optional[torch.Tensor],
-    # camera: Optional[CamerasBase],
-    # fun_viewpool: Optional[Callable],
-    xyz_embedding_function: Optional[Callable],
-) -> torch.Tensor:
-    bs, *spatial_size, pts_per_ray, _ = xyz_world.shape
-
-    ray_points_for_embed = xyz_world
-    if xyz_embedding_function is None:
-        embeds = torch.empty(
-            *(bs, 1, *spatial_size, pts_per_ray, 0),
-            dtype=xyz_world.dtype,
-            device=xyz_world.device,
-        )
-    else:
-        embeds = xyz_embedding_function(ray_points_for_embed)
-
-    if global_codes is not None:
-        embeds = broadcast_global_code(embeds, global_codes)
-    return embeds
-
-
-def broadcast_global_code(embeds: torch.Tensor, global_codes: torch.Tensor):
-    """
-    Expands the `global_code` of shape (minibatch, dim)
-    so that it can be appended to `embeds` of shape (minibatch, ..., dim2),
-    and appends to the last dimension of `embeds`.
-    """
-    bs = embeds.shape[0]
-    global_code_broadcast = global_codes.view(bs, *([1] * (embeds.ndim - 2)), -1).expand(
-        *embeds.shape[:-1],
-        global_codes.shape[-1],
-    )
-    return torch.cat([embeds, global_code_broadcast], dim=-1)

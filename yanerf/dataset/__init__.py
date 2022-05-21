@@ -1,2 +1,2 @@
-from .blender_dataset import BlenderDataset
+from . import blender_dataset, llff_dataset
 from .builder import DATASETS

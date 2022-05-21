@@ -10,12 +10,6 @@ from .builder import MODELS
 logger = get_logger(__name__)
 
 
-class ModelOutputs(NamedTuple):
-    raw_densities: torch.Tensor
-    rays_colors: torch.Tensor
-    aux: Any
-
-
 @MODELS.register_module()
 class ZeroOutputer(torch.nn.Module):
     def __init__(self) -> None:
@@ -39,4 +33,4 @@ class ZeroOutputer(torch.nn.Module):
         *_, n_pts_per_ray = lengths.shape
         raw_densities = origins.new_zeros(B, *spatial_shape, n_pts_per_ray, 1)
         rays_colors = origins.new_zeros(B, *spatial_shape, n_pts_per_ray, 3)
-        return ModelOutputs(raw_densities, rays_colors, {})
+        return dict(rays_densities=raw_densities, rays_features=rays_colors, aux={})

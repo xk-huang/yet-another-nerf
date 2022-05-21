@@ -1,10 +1,11 @@
 import collections
 import dataclasses
 import math
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 
+from yanerf.pipelines.feature_extractors import FEATURE_EXTRACTORS
 from yanerf.pipelines.models import MODELS
 from yanerf.pipelines.ray_samplers import RAY_SAMPLERS
 from yanerf.pipelines.ray_samplers.utils import RayBundle, RenderSamplingMode
@@ -16,8 +17,6 @@ from yanerf.utils.logging import get_logger
 
 from .builder import PIPELINES
 from .utils import PartialFunctionWrapper, ViewMetrics, sample_grid, scatter_rays_to_image
-
-from yanerf.pipelines.feature_extractors import FEATURE_EXTRACTORS
 
 
 @PIPELINES.register_module()
@@ -78,8 +77,7 @@ class NeRFPipeline(torch.nn.Module):
             feature_extractor_cfg = [feature_extractor_cfg]
 
         feature_extractor_list = [
-            PartialFunctionWrapper(FEATURE_EXTRACTORS.build(_feature_extractor_cfg))
-            for _feature_extractor_cfg in feature_extractor_cfg
+            FEATURE_EXTRACTORS.build(_feature_extractor_cfg) for _feature_extractor_cfg in feature_extractor_cfg
         ]
         return torch.nn.ModuleList(feature_extractor_list)
 
@@ -101,6 +99,8 @@ class NeRFPipeline(torch.nn.Module):
         # global_codes: Optional[torch.Tensor] = None,
         # fg_probability: Optional[torch.Tensor],
         mask_crop: Optional[torch.Tensor] = None,
+        sampling_prob_mask: Optional[torch.Tensor] = None,
+        n_rays_per_image: Union[None, int, List[int]] = None,
         # sequence_name: Optional[List[str]],
         bg_image_rgb: Optional[torch.Tensor] = None,
         image_rgb: Optional[torch.Tensor] = None,
@@ -146,6 +146,8 @@ class NeRFPipeline(torch.nn.Module):
             evaluation_mode=evaluation_mode,
             # mask=mask_crop if mas k_crop is not None and sampling_mode == RenderSamplingMode.MASK_SAMPLE else None,
             mask=mask_crop if mask_crop is not None and sampling_mode == RenderSamplingMode.MASK_SAMPLE else None,
+            sampling_prob_mask=sampling_prob_mask if evaluation_mode == EvaluationMode.TRAINING else None,
+            n_rays_per_image=n_rays_per_image if evaluation_mode == EvaluationMode.TRAINING else None,
             image_height=image_height,
             image_width=image_width,
             min_depth=min_depth,
@@ -164,8 +166,14 @@ class NeRFPipeline(torch.nn.Module):
             _extracted_feature = feature_extractor(**kwargs)
             for k, v in _extracted_feature.items():
                 extracted_features[k].append(v)
-        for k, v in extracted_features.items():
-            extracted_features[k] = torch.stack(v, dim=1)
+
+        for k, v_list in extracted_features.items():
+            if isinstance(v_list[0], torch.Tensor):
+                extracted_features[k] = torch.stack(v_list, dim=1)
+            else:
+                if len(v_list) != 1:
+                    raise KeyError(f"{k} has multiple {type(v_list[0])} values.")
+                extracted_features[k] = v_list[0]
 
         for func in self.implicit_functions:
             func.bind_args(**extracted_features)
@@ -183,36 +191,22 @@ class NeRFPipeline(torch.nn.Module):
             func.unbind_args()
 
         preds = self._get_view_metrics(raymarched=rendered, xys=xys, image_rgb=image_rgb, depth_map=depth_map)
-
-        # [TODO] Visualize the monte-carlo pixel renders by splatting onto an image grid.
+        # Visualize the monte-carlo pixel renders by splatting onto an image grid.
+        rendered_blob = {}
         if sampling_mode == RenderSamplingMode.MASK_SAMPLE:
             if self.output_rasterized_mc:
-                preds["sampled_grids"] = scatter_rays_to_image(
-                    torch.ones(*xys.shape[:-1], dtype=torch.float32, device=xys.device)[..., None],
-                    xys,
-                    self.render_image_height if image_height is None else image_height,
-                    self.render_image_width if image_width is None else image_width,
-                    None,
-                )
-                (
-                    preds["rendered_images"],
-                    preds["rendered_depths"],
-                    preds["rendered_alpha_masks"],
-                ) = self._rasterize_mc_samples(
-                    xys,
-                    None,  # type: ignore[arg-type]
-                    image_height,
-                    image_width,
-                    rendered.features,
-                    rendered.depths,
-                    rendered.alpha_masks,
-                )
+                rendered_blob["rendered_images"] = rendered.features
+                rendered_blob["rendered_depths"] = rendered.depths
+                rendered_blob["rendered_alpha_masks"] = rendered.alpha_masks
+                rendered_blob = self._rasterize_mc_samples(xys, None, image_height, image_width, rendered_blob)
         elif sampling_mode == RenderSamplingMode.FULL_GRID:
-            preds["rendered_images"] = rendered.features
-            preds["rendered_depths"] = rendered.depths
-            preds["rendered_alpha_masks"] = rendered.alpha_masks
+            rendered_blob["rendered_images"] = rendered.features
+            rendered_blob["rendered_depths"] = rendered.depths
+            rendered_blob["rendered_alpha_masks"] = rendered.alpha_masks
         else:
             raise ValueError(f"Invalid RenderSamplingMode: {sampling_mode}.")
+        preds.update(rendered_blob)
+
         # Loss
         objective = self._get_objective(preds)
         if objective is not None:
@@ -316,7 +310,7 @@ class NeRFPipeline(torch.nn.Module):
         bg_color: Optional[torch.Tensor],
         image_height: Optional[int],
         image_width: Optional[int],
-        *args: torch.Tensor,
+        rendered_dict: Dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, ...]:
         if image_height is None or image_width is None:
             image_height = self.render_image_height
@@ -325,7 +319,9 @@ class NeRFPipeline(torch.nn.Module):
         def _scatter_rays_to_image(features):
             return scatter_rays_to_image(features, xys, image_height, image_width, bg_color)
 
-        return tuple(_scatter_rays_to_image(_tensor) for _tensor in args)
+        for k, _tensor in rendered_dict.items():
+            rendered_dict[k] = _scatter_rays_to_image(_tensor)
+        return rendered_dict
 
 
 def _apply_chunked(func, chunk_generator, tensor_collator):
@@ -368,13 +364,13 @@ def _chunk_generator(
         bg_color_last_dim = bg_color.shape[-1]
     for start_idx in iter:
         end_idx = min(start_idx + chunk_size_in_rays, n_rays)
-        _origins = origins.reshape(batch_size, -1, origins_last_dim)[:, start_idx:end_idx]
-        _directions = directions.reshape(batch_size, -1, directions_last_dim)[:, start_idx:end_idx]
-        _lengths = lengths.reshape(batch_size, -1, lengths_last_dim)[:, start_idx:end_idx]
-        _xys = xys.reshape(batch_size, -1, xys_last_dim)[:, start_idx:end_idx]
+        _origins = origins.reshape(batch_size, -1, 1, origins_last_dim)[:, start_idx:end_idx]
+        _directions = directions.reshape(batch_size, -1, 1, directions_last_dim)[:, start_idx:end_idx]
+        _lengths = lengths.reshape(batch_size, -1, 1, lengths_last_dim)[:, start_idx:end_idx]
+        _xys = xys.reshape(batch_size, -1, 1, xys_last_dim)[:, start_idx:end_idx]
         _bg_color: Optional[torch.Tensor]
         if bg_color is not None:
-            _bg_color = bg_color.view(batch_size, -1, bg_color_last_dim)[:, start_idx:end_idx]
+            _bg_color = bg_color.view(batch_size, -1, 1, bg_color_last_dim)[:, start_idx:end_idx]
         else:
             _bg_color = None
 
@@ -385,13 +381,14 @@ def _tensor_collator(batch, new_dims) -> torch.Tensor:
     """
     Helper function to reshape the batch to the desired shape
     Args:
-        batch (_type_): _description_
+        batch (_type_): (B, num_rays, 1, *preseved_dims)
         new_dims (_type_): shapes before chunking, `(B, H, W, -1)` or `(B, n_rays_per_image, 1, -1)`
 
     Returns:
         torch.Tensor: _description_
     """
-    return torch.cat(batch, dim=1).reshape(*new_dims, -1)
+    last_dims = batch[0].shape[3:]  # escape the first (B, num_rays, 1) dims
+    return torch.cat(batch, dim=1).reshape(*new_dims, *last_dims)
 
 
 def cat_dataclass(batch, tensor_collator: Callable):
