@@ -63,10 +63,10 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.run --nproc_per
 
 ## Performance
 
-| Dataset | Config                            | PSNR (repoduce) | PSNR (paper) | Time (repoduce)     | Time (paper) |
-| ------- | --------------------------------- | --------------- | ------------ | ------------------- | ------------ |
-| Lego    | [lego.yml](configs/nerf/lego.yml) | 30.70           | 32.54        | ~2h (on 4 RTX3090)  | >12h         |
-| Fern    | N/A                               | N/A             | 25.17        | N/A                 | N/A          |
+| Data | Config                             | Ckpt                                                         | PSNR (repoduce) | PSNR (paper) | Time (repoduce)      | Time (paper) |
+| ------- | ---------------------------------- | ------------------------------------------------------------ | --------------- | ------------ | -------------------- | ------------ |
+| Lego    | [lego.yml](configs/nerf/lego.yml)  | [lego.ckpt](https://github.com/xk-huang/yet-another-nerf/releases/download/pretrain_model/lego.ckpts_-001.pth) | 30.70           | 32.54        | ~4h (on 4 RTX3090)   | >12h         |
+| Fern    | [fern.yml](configs/nerf/fern.yml) | [fern.ckpt](https://github.com/xk-huang/yet-another-nerf/releases/download/pretrain_model/fern.ckpts_-001.pth) | 27.94           | 25.17        | ~2.5h (on 4 RTX3090) | >12h         |
 
 ## The Code Structure
 
